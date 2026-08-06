@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Pi Ollama Studio</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">π</div>
+        <div><strong>Pi Ollama Studio</strong><span>local coding agent</span></div>
+      </div>
+      <div class="top-controls">
+        <label class="compact-field model-field">
+          <span>Model</span>
+          <select id="topModel"></select>
+          <input id="customModelInput" class="hidden" placeholder="e.g. llama3.3:70b" style="width: 140px; margin-left: 4px;">
+          <!-- Model pill: shows short name · quant · VRAM when a model is loaded -->
+          <div id="modelPill"></div>
+        </label>
+        <label class="compact-field"><span>Thinking</span><select id="thinkingLevel"><option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
+        <button id="startPi" class="primary">Start Pi</button>
+        <button id="stopPi" class="danger ghost">Stop</button>
+      </div>
+      <div class="health-strip">
+        <span id="piHealth" class="health"><i></i> Pi</span>
+        <span id="ollamaHealth" class="health"><i></i> Ollama</span>
+        <span id="vramHealth" class="health"><i></i> VRAM: Standby</span>
+        <span id="gpuHealth" class="health"><i></i> GPU</span>
+        <!-- Always-visible GPU VRAM badge — color-coded green/yellow/red -->
+        <span id="gpuVramBadge" title="GPU VRAM usage">GPU —</span>
+        <!-- Live Active Context Token Gauge -->
+        <span id="contextGaugeBadge" class="health" title="Active Context Tokens vs Model Limit">Context —</span>
+      </div>
+    </header>
+
+    <aside class="left-panel panel">
+      <section class="panel-section workspace-section">
+        <div class="section-title"><span>Workspace</span><button id="refreshWorkspace" class="icon-btn" title="Refresh">↻</button></div>
+        <div class="workspace-row"><input id="workspacePath" placeholder="C:\\projects\\app or /home/me/app"><button id="applyWorkspace">Open</button></div>
+        <div id="gitSummary" class="git-summary muted">No workspace selected</div>
+      </section>
+
+      <section class="panel-section sessions-section">
+        <div class="section-title"><span>Sessions</span><div><button id="newSession" class="icon-btn" title="New session">＋</button><button id="refreshSessions" class="icon-btn" title="Refresh">↻</button></div></div>
+        <div id="sessionList" class="session-list empty-state">No sessions</div>
+      </section>
+
+      <section class="panel-section explorer-section">
+        <div class="section-title"><span>Explorer</span><button id="collapseExplorer" class="icon-btn">−</button></div>
+        <div id="fileTree" class="file-tree empty-state">Open a workspace</div>
+      </section>
+    </aside>
+
+    <main class="main-panel panel">
+      <nav class="view-tabs">
+        <button data-view="chat" class="active">Chat</button>
+        <button data-view="editor">Editor <span id="editorDirty"></span></button>
+        <button data-view="tree">Session Tree</button>
+        <button data-view="git">Git</button>
+        <button data-view="terminal">Terminal</button>
+        <button data-view="logs">Logs</button>
+        <button data-view="docs">Documentation</button>
+      </nav>
+
+      <section id="view-chat" class="view active chat-view">
+        <div id="welcome" class="welcome-card">
+          <div class="welcome-icon">π</div>
+          <h1>Local coding with Pi + Ollama</h1>
+          <p>Select a workspace and model, then start Pi. The agent uses Pi’s real tools, skills, prompts, extensions, compaction, and session engine.</p>
+          <div class="quick-actions">
+            <button data-prompt="Inspect this repository and explain its architecture. Do not change files.">Explain repository</button>
+            <button data-prompt="Run the most relevant tests, diagnose failures, and propose the smallest safe fix.">Diagnose tests</button>
+            <button data-prompt="Review the current git diff for correctness, regressions, and security issues.">Review changes</button>
+          </div>
+        </div>
+        <div id="messages" class="messages"></div>
+        <div id="queueBar" class="queue-bar hidden"></div>
+        <div id="extensionWidgets" class="extension-widgets hidden" aria-live="polite"></div>
+        <div class="composer-wrap">
+          <div id="attachments" class="attachments"></div>
+          <textarea id="composer" rows="3" placeholder="Ask Pi to inspect, edit, test, or debug your project… (Press Enter to send, Shift+Enter for new line)"></textarea>
+          <div class="composer-actions">
+            <div>
+              <button id="attachImage" class="icon-btn" title="Attach image">▧</button>
+              <input id="imageInput" type="file" accept="image/*" multiple hidden>
+              <button id="compactNow" class="text-btn">Compact</button>
+              <button id="abortAgent" class="text-btn danger-text">Abort</button>
+            </div>
+            <div class="send-group">
+              <button id="sendSteer" class="text-btn" title="Inject corrective guidance into active turn">Steer Now</button>
+              <button id="sendFollowUp" class="text-btn" title="Queue message to run after current turn">Follow Up</button>
+              <button id="sendPrompt" class="primary" title="Send message (Press Enter)">Send <kbd>↵</kbd></button>
+            </div>
+          </div>
+        </div>
+        <div id="extensionWidgetsBelow" class="extension-widgets hidden" aria-live="polite"></div>
+      </section>
+
+      <section id="view-editor" class="view editor-view">
+        <div class="editor-toolbar">
+          <div><span id="editorPath" class="editor-path">No file open</span><span id="editorMeta" class="muted"></span></div>
+          <div><button id="reloadFile">Reload</button><button id="saveFile" class="primary">Save</button></div>
+        </div>
+        <textarea id="codeEditor" spellcheck="false" placeholder="Choose a text file from Explorer"></textarea>
+      </section>
+
+      <section id="view-tree" class="view tree-view">
+        <div class="sub-toolbar session-tree-toolbar">
+          <div class="tree-toolbar-left">
+            <div id="treeViewModeGroup" class="tree-filter-group">
+              <button data-mode="active_path" class="tree-mode-btn active" title="Active conversation timeline without horizontal indent">⚡ Active Path</button>
+              <button data-mode="full_tree" class="tree-mode-btn" title="Full tree graph with clamped indents">🌿 Full Graph</button>
+              <button data-mode="compact_noise" class="tree-mode-btn" title="Hide system events & empty tool results">⚡ Compact</button>
+            </div>
+            <button id="refreshTree" class="sm-btn primary">↻ Refresh</button>
+            <button id="toggleExpandAllTree" class="sm-btn secondary">↕ Expand All</button>
+            <button id="showDiffView" class="sm-btn">Git Diff View</button>
+            <button id="refreshEntries" class="sm-btn">Raw JSON</button>
+            <button id="exportSession" class="sm-btn">Export HTML</button>
+          </div>
+          <div class="tree-toolbar-right">
+            <div id="treeFilterGroup" class="tree-filter-group">
+              <button data-filter="all" class="tree-filter-btn active">All</button>
+              <button data-filter="user" class="tree-filter-btn">User</button>
+              <button data-filter="assistant" class="tree-filter-btn">Assistant</button>
+              <button data-filter="tool" class="tree-filter-btn">Tools</button>
+              <button data-filter="compaction" class="tree-filter-btn">Compaction</button>
+            </div>
+            <input type="search" id="treeSearchInput" placeholder="Search tree entries..." class="tree-search-input" />
+          </div>
+        </div>
+        <div id="treeStatsBar" class="tree-stats-bar hidden">
+          <span id="treeStatsText" class="muted"></span>
+        </div>
+        <div id="sessionTree" class="tree-content empty-state">Start Pi to inspect the session tree.</div>
+      </section>
+
+      <!-- ── Dedicated Terminal View & Session Manager ────────────────────── -->
+      <section id="view-terminal" class="view terminal-view">
+        <div class="sub-toolbar">
+          <div>
+            <button id="launchDesktopTerminal" class="primary sm-btn">＋ New Terminal Window</button>
+            <button id="attachPiTerminal" class="secondary sm-btn">⚡ Attach to Active Pi Session</button>
+          </div>
+          <div>
+            <button id="refreshTerminalSessions" class="sm-btn">↻ Refresh Sessions</button>
+          </div>
+        </div>
+
+        <div class="terminal-content-grid">
+          <div class="terminal-section-box">
+            <div class="settings-section-header">Active Terminal Sessions & CLI Processes</div>
+            <div id="terminalSessionsList" class="terminal-sessions-list empty-state">No active terminal sessions found. Click "+ New Terminal Window" to launch one.</div>
+          </div>
+
+          <div class="terminal-section-box console-box">
+            <div class="settings-section-header">Interactive Web Shell Console</div>
+            <div class="web-console-input-row">
+              <input id="webConsoleInput" placeholder="Type bash / shell command (e.g. dir, git status, npm test)…">
+              <button id="runWebConsole" class="primary sm-btn">Execute</button>
+            </div>
+            <pre id="webConsoleOutput" class="web-console-output">Web Console ready. Enter a command above to execute directly in the workspace.</pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Git Commit Panel ──────────────────────────────────────────────── -->
+      <section id="view-git" class="view git-view">
+        <div class="sub-toolbar git-toolbar">
+          <div class="git-toolbar-left">
+            <span class="git-branch-icon">⎇</span>
+            <span id="gitBranchInfo" class="git-branch-name">Loading…</span>
+          </div>
+          <div class="git-toolbar-right">
+            <button id="gitStageAllBtn" class="sm-btn secondary">+ Stage All</button>
+            <button id="gitRefreshBtn" class="sm-btn">↻ Refresh</button>
+          </div>
+        </div>
+        <div class="git-content-grid">
+          <!-- Left: File list -->
+          <div class="git-file-panel">
+            <div id="gitFileList" class="git-file-list empty-state">Open a workspace to see git status</div>
+            <!-- Commit box -->
+            <div class="git-commit-box">
+              <textarea id="gitCommitMessage" rows="3" placeholder="Commit message… (Ctrl+Enter to commit)"></textarea>
+              <button id="gitCommitBtn" class="primary full">Commit Staged</button>
+            </div>
+          </div>
+          <!-- Right: Diff viewer -->
+          <div class="git-diff-panel">
+            <div class="git-diff-header">Diff</div>
+            <div id="gitDiffContent" class="git-diff-content empty-state">Select a file to see its diff</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-logs" class="view logs-view">
+        <div class="sub-toolbar"><button id="clearLogs">Clear</button><label><input id="showProtocol" type="checkbox"> Protocol events</label></div>
+        <pre id="logOutput"></pre>
+      </section>
+
+
+
+      <section id="view-docs" class="view docs-view">
+        <div class="docs-toolbar">
+          <div>
+            <strong>Pi Ollama Studio documentation</strong>
+            <span class="muted">How the agent, models, memory, sessions, and controls work</span>
+          </div>
+          <input id="docsSearch" type="search" placeholder="Search documentation…">
+        </div>
+        <div class="docs-layout">
+          <nav class="docs-nav" aria-label="Documentation sections">
+            <button data-doc-link="docs-quick-start">Quick start</button>
+            <button data-doc-link="docs-core-logic">Core logic</button>
+            <button data-doc-link="docs-pi-agent">Pi agent</button>
+            <button data-doc-link="docs-models">Models and profiles</button>
+            <button data-doc-link="docs-context">Context and KV cache</button>
+            <button data-doc-link="docs-tokens">Token monitoring</button>
+            <button data-doc-link="docs-sessions">Sessions and compaction</button>
+            <button data-doc-link="docs-runtime">Ollama runtime</button>
+            <button data-doc-link="docs-tools">Tools and commands</button>
+            <button data-doc-link="docs-safety">Workspace safety</button>
+            <button data-doc-link="docs-troubleshooting">Troubleshooting</button>
+          </nav>
+          <div id="docsContent" class="docs-content">
+            <article id="docs-quick-start" class="doc-card" data-doc-search>
+              <h2>Quick start</h2>
+              <ol>
+                <li>Start Ollama and make sure at least one coding model is installed.</li>
+                <li>Open an absolute project directory under <strong>Workspace</strong>.</li>
+                <li>Select an Ollama model in the top bar. A 32K context profile is a safe everyday starting point; 64K is useful for repository exploration.</li>
+                <li>Press <strong>Start Pi</strong>. Pi becomes the coding agent and Ollama performs model inference.</li>
+                <li>Describe the task in Chat. Review streamed tool calls and inspect <strong>Git status</strong> or the editor before accepting the result.</li>
+              </ol>
+              <div class="doc-callout"><strong>Recommended local workflow:</strong> one task per session, targeted tests first, compact when context exceeds roughly 60–70%, and avoid dumping complete build logs into the agent.</div>
+            </article>
+
+            <article id="docs-core-logic" class="doc-card" data-doc-search>
+              <h2>Core logic: what the application is doing</h2>
+              <p>Pi Ollama Studio is a visual orchestration layer. It does not replace Pi’s agent loop or Ollama’s inference engine.</p>
+              <div class="logic-flow">
+                <div><strong>1. You</strong><span>Choose a workspace, model, settings, and task.</span></div>
+                <b>→</b>
+                <div><strong>2. Studio UI</strong><span>Sends commands, renders events, and manages profiles.</span></div>
+                <b>→</b>
+                <div><strong>3. Pi RPC</strong><span>Plans work, selects tools, edits files, runs commands, and stores sessions.</span></div>
+                <b>→</b>
+                <div><strong>4. Ollama</strong><span>Loads the selected model and generates each agent response.</span></div>
+              </div>
+              <h3>Request lifecycle</h3>
+              <ol>
+                <li>The UI starts <code>pi --mode rpc</code> inside the selected workspace.</li>
+                <li>Pi loads project instructions, skills, prompts, extensions, and session history.</li>
+                <li>Your message is sent to Pi. Pi assembles the model context and calls the Ollama-backed model registered in Pi.</li>
+                <li>The model may request Pi tools such as reading, editing, writing, or running shell commands.</li>
+                <li>Pi executes the tool, returns its result to the model, and continues until the agent settles or you abort it.</li>
+                <li>The UI receives streaming RPC events and renders text, thinking, tool status, context usage, retries, and extension dialogs.</li>
+              </ol>
+              <p><strong>Important:</strong> Studio never pretends that a UI setting can override Ollama architecture. Per-model generation settings are stored in Ollama profiles; server-level KV and concurrency settings require an Ollama restart.</p>
+            </article>
+
+            <article id="docs-pi-agent" class="doc-card" data-doc-search>
+              <h2>Pi agent controls</h2>
+              <dl>
+                <dt>Start Pi</dt><dd>Launches a Pi RPC process rooted in the current workspace and opens or creates a session.</dd>
+                <dt>Thinking level</dt><dd>Asks Pi to use the selected reasoning effort when the model/provider supports it. Higher levels can improve difficult planning but increase latency and generated tokens.</dd>
+                <dt>Send</dt><dd>Starts a normal user turn.</dd>
+                <dt>Steer now</dt><dd>Injects corrective guidance while the current agent turn is still running.</dd>
+                <dt>Follow up</dt><dd>Queues a message to run after the current turn settles.</dd>
+                <dt>Abort</dt><dd>Cancels the active Pi turn. Completed tool side effects, such as already-written files, are not automatically reverted.</dd>
+              </dl>
+            </article>
+
+            <article id="docs-models" class="doc-card" data-doc-search>
+              <h2>Ollama models and profiles</h2>
+              <p>The model selector lists models installed in your local Ollama instance. Pulling a model downloads it; unloading releases its active runtime allocation; deleting removes its local files.</p>
+              <h3>Profile settings</h3>
+              <dl>
+                <dt>Base model</dt><dd>The original Ollama model from which a named profile is created.</dd>
+                <dt>Profile model name</dt><dd>A new local alias, such as <code>qwen-code:64k</code>, with persistent parameters.</dd>
+                <dt>Context window / <code>num_ctx</code></dt><dd>Maximum tokens Ollama can retain for the current request. Larger values use more KV-cache memory and increase prompt-processing time.</dd>
+                <dt>Max output / <code>num_predict</code></dt><dd>Maximum generated tokens in one model response. It is not the total session limit.</dd>
+                <dt>Temperature</dt><dd>Randomness. Coding agents usually work best around 0.1–0.3.</dd>
+                <dt>Top P and Top K</dt><dd>Restrict candidate tokens. Lower values are more deterministic; overly restrictive values can make responses brittle.</dd>
+                <dt>Repeat penalty</dt><dd>Discourages repetitive output. Excessive values may damage code consistency.</dd>
+                <dt>Thinking model</dt><dd>Declares that the model supports reasoning-oriented behavior in Pi.</dd>
+                <dt>Vision input</dt><dd>Declares that image attachments are supported. Enable only for a compatible multimodal model.</dd>
+              </dl>
+            </article>
+
+            <article id="docs-context" class="doc-card" data-doc-search>
+              <h2>Context window, KV cache, and VRAM</h2>
+              <p>These settings are related, but they are not the same thing.</p>
+              <div class="comparison-grid">
+                <div><strong>Context window</strong><span>How many prompt/history tokens the model can attend to.</span></div>
+                <div><strong>KV cache</strong><span>Runtime memory holding attention keys and values for those tokens.</span></div>
+                <div><strong>Model weights</strong><span>The quantized model itself, loaded into GPU and/or system RAM.</span></div>
+                <div><strong>Max output</strong><span>The cap for newly generated tokens in one response.</span></div>
+              </div>
+              <p>Increasing context does not make the model smarter by itself. It allows more history and files to fit, but it increases prefill time and KV-cache usage. For a 24 GB GPU, 32K is a sensible default and 64K is a deliberate agent profile. Treat 128K as an experiment that may require heavier KV quantization or CPU offload.</p>
+              <h3>KV precision</h3>
+              <dl>
+                <dt>f16</dt><dd>Largest KV allocation and highest precision.</dd>
+                <dt>q8_0</dt><dd>Recommended balance for local coding; approximately half the KV memory of f16 in common configurations.</dd>
+                <dt>q4_0</dt><dd>Lowest KV memory, but more quality risk at long contexts.</dd>
+              </dl>
+              <p>The displayed KV figure is an estimate because exact usage depends on the model architecture, layer count, head dimensions, context, parallel slots, and Ollama implementation.</p>
+            </article>
+
+            <article id="docs-tokens" class="doc-card" data-doc-search>
+              <h2>Token and context monitoring</h2>
+              <dl>
+                <dt>Total tokens</dt><dd>Cumulative input and generated tokens recorded for the current Pi session.</dd>
+                <dt>Context usage</dt><dd>The current active prompt after Pi’s history assembly and compaction, shown against the model context window.</dd>
+                <dt>Tool calls</dt><dd>How many tools Pi has invoked. Tool calls themselves are small, but large tool results can quickly fill context.</dd>
+                <dt>Runtime context</dt><dd>The context allocation reported for the currently loaded Ollama model.</dd>
+              </dl>
+              <div class="doc-callout"><strong>Most common token leak:</strong> large logs and repeated whole-file reads. Ask Pi to use targeted searches, line ranges, filtered test output, and <code>git diff</code>.</div>
+            </article>
+
+            <article id="docs-sessions" class="doc-card" data-doc-search>
+              <h2>Sessions, trees, steering, and compaction</h2>
+              <dl>
+                <dt>Session</dt><dd>Pi’s persistent conversation and tool history for a workspace task.</dd>
+                <dt>Session tree</dt><dd>Shows branches in the conversation. Forking from an earlier user entry creates an alternate path without deleting the original history.</dd>
+                <dt>Compaction</dt><dd>Summarizes older context while preserving recent messages. It reduces active tokens but is intentionally lossy.</dd>
+                <dt>Custom compaction instructions</dt><dd>Tells Pi what facts must survive, such as changed files, decisions, failing tests, and remaining tasks.</dd>
+                <dt>Auto retry</dt><dd>Allows Pi to retry transient model/provider failures. It does not guarantee correction of a bad implementation.</dd>
+              </dl>
+            </article>
+
+            <article id="docs-runtime" class="doc-card" data-doc-search>
+              <h2>Ollama server runtime</h2>
+              <dl>
+                <dt>Base URL</dt><dd>Address of the Ollama HTTP API, normally <code>http://127.0.0.1:11434</code>.</dd>
+                <dt>Flash Attention</dt><dd>Enables Ollama’s optimized attention path where supported. It is normally desirable for long-context local inference.</dd>
+                <dt>Default context</dt><dd>Fallback server context. A named model profile can define its own context value.</dd>
+                <dt>Parallel slots</dt><dd>Concurrent sequences per loaded model. More parallelism multiplies KV-cache pressure; use 1 for a single local coding agent.</dd>
+                <dt>Max loaded models</dt><dd>How many models Ollama may keep resident simultaneously.</dd>
+                <dt>Max queue</dt><dd>How many requests may wait when runtime capacity is busy.</dd>
+                <dt>Keep alive</dt><dd>How long an idle model remains loaded, for example <code>10m</code>. Longer values reduce reload latency but reserve memory.</dd>
+                <dt>Managed Ollama process</dt><dd>Auto-starts Ollama with the configured environment on the next Studio launch when no Ollama server is already online. Studio can only apply server-wide settings to a process it launches or to an externally configured service.</dd>
+              </dl>
+            </article>
+
+            <article id="docs-tools" class="doc-card" data-doc-search>
+              <h2>Tools, shell commands, skills, and extensions</h2>
+              <p>Pi owns the tool loop. Studio displays tool-call arguments, progress, results, and errors. Direct shell runs through Pi rather than an unrelated terminal process, so it stays associated with the current agent workspace.</p>
+              <dl>
+                <dt>Commands, skills, prompts</dt><dd>Loads commands known to the running Pi process and inserts a selected command into Chat.</dd>
+                <dt>Raw Pi RPC</dt><dd>An advanced escape hatch for documented Pi RPC commands that do not yet have a dedicated visual control.</dd>
+                <dt>Extension dialogs</dt><dd>Pi extensions can request confirmation, selection, text, or editor input. Studio renders the standard RPC dialog types.</dd>
+              </dl>
+            </article>
+
+            <article id="docs-safety" class="doc-card" data-doc-search>
+              <h2>Workspace safety and review</h2>
+              <ul>
+                <li>Open only the project directory Pi should be allowed to inspect and modify.</li>
+                <li>Use Git and commit or stash important work before autonomous changes.</li>
+                <li>Review tool calls and <code>git diff</code>; aborting does not undo commands already executed.</li>
+                <li>Project resources may contain instructions. Disable project trust when opening an unknown repository.</li>
+                <li>The built-in editor prevents path traversal outside the selected workspace, but Pi shell tools still operate with the permissions of your local user account.</li>
+              </ul>
+            </article>
+
+            <article id="docs-troubleshooting" class="doc-card" data-doc-search>
+              <h2>Troubleshooting</h2>
+              <dl>
+                <dt>Pi does not start</dt><dd>Check the Pi installation path under Advanced, verify Node.js, and inspect Logs for stderr.</dd>
+                <dt>Model is missing</dt><dd>Refresh Ollama, pull the exact registry model name, then synchronize models to Pi.</dd>
+                <dt>Context setting appears unchanged</dt><dd>Use the generated model profile and start a new model load. Existing loaded instances may retain the old allocation until unloaded.</dd>
+                <dt>KV setting appears unchanged</dt><dd>KV type is server-wide. Stop external Ollama and restart a managed process, or configure the Ollama service environment manually.</dd>
+                <dt>Generation is very slow</dt><dd>Check GPU offload, lower context, use one parallel slot, unload other models, and inspect whether the model exceeds GPU memory.</dd>
+                <dt>Session becomes confused</dt><dd>Compact with explicit preservation instructions or start a fresh task session.</dd>
+              </dl>
+            </article>
+            <div id="docsNoResults" class="docs-empty hidden">No documentation sections match your search.</div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="statusbar">
+        <span id="agentStatus">Idle</span>
+        <span id="sessionName">No session</span>
+        <span id="tokenStatus">0 tokens</span>
+        <span id="contextStatus">Context —</span>
+        <span id="toolStatus">0 tools</span>
+        <span id="extensionStatus" class="extension-status"></span>
+      </footer>
+    </main>
+
+    <aside class="right-panel panel">
+      <nav class="settings-tabs">
+        <button data-settings="model" class="active">Model</button>
+        <button data-settings="runtime">Runtime</button>
+        <button data-settings="session">Pi</button>
+        <button data-settings="advanced">Advanced</button>
+      </nav>
+
+      <div id="settings-model" class="settings-page active">
+        <section class="settings-section">
+          <h3>Active model</h3>
+          <div id="activeModelCard" class="metric-card"><strong>None</strong><span>Select an Ollama model</span></div>
+          <div class="metric-grid">
+            <div><span>Model VRAM</span><strong id="modelVram">—</strong></div>
+            <div><span>Total GPU VRAM</span><strong id="totalGpuVram">—</strong></div>
+            <div><span>Runtime context</span><strong id="runtimeContext">—</strong></div>
+            <div><span>Offload</span><strong id="offloadStatus">—</strong></div>
+          </div>
+          <div id="vramMeter" class="vram-meter-wrap">
+            <div class="vram-meter-header"><span>GPU Memory Usage</span><strong id="vramMeterText">0 / 24.0 GB (0%)</strong></div>
+            <div class="vram-meter-bar"><div id="vramMeterFill" class="vram-meter-fill"></div></div>
+          </div>
+          <div class="button-row"><button id="diagnoseModel">Analyze memory</button><button id="unloadModel">Unload</button></div>
+        </section>
+
+        <section class="settings-section">
+          <h3>Create Ollama profile</h3>
+          <label>Base model<select id="profileBaseModel"></select></label>
+          <label>Profile model name<input id="profileName" placeholder="qwen-code:64k"></label>
+          <div class="two-col"><label>Context window<input id="profileContext" type="number" min="2048" step="1024" value="65536"></label><label>Max output<input id="profileOutput" type="number" min="256" step="256" value="8192"></label></div>
+          <div class="two-col"><label>Temperature<input id="profileTemperature" type="number" min="0" max="2" step="0.05" value="0.2"></label><label>Top P<input id="profileTopP" type="number" min="0" max="1" step="0.05" value="0.9"></label></div>
+          <div class="two-col"><label>Top K<input id="profileTopK" type="number" min="0" step="1" value="40"></label><label>Repeat penalty<input id="profileRepeat" type="number" min="0" max="2" step="0.01" value="1.05"></label></div>
+          <div class="two-col"><label>Min P<input id="profileMinP" type="number" min="0" max="1" step="0.01" value="0.05"></label><label>Seed<input id="profileSeed" type="number" min="-1" step="1" value="-1"></label></div>
+          <div class="two-col"><label>Mirostat<select id="profileMirostat"><option value="0">0 (Disabled)</option><option value="1">1 (Mirostat)</option><option value="2">2 (Mirostat 2.0)</option></select></label><label>Stop sequences<input id="profileStop" placeholder="comma-separated stop strings"></label></div>
+          <label>Custom System Prompt<textarea id="profileSystem" rows="2" placeholder="Optional system prompt override for Modelfile"></textarea></label>
+          <div class="check-row"><label><input id="profileReasoning" type="checkbox" checked> Thinking model</label><label><input id="profileVision" type="checkbox"> Vision input</label></div>
+          <button id="createProfile" class="primary full">Create profile and add to Pi</button>
+          <div id="ollamaProgress" class="operation-progress muted"></div>
+        </section>
+
+        <section class="settings-section">
+          <h3>Model library</h3>
+          <div class="inline-input"><input id="pullModelName" placeholder="qwen3-coder:30b"><button id="pullModel">Pull</button></div>
+          <div id="modelLibrary" class="model-library"></div>
+        </section>
+      </div>
+
+      <div id="settings-runtime" class="settings-page">
+        <section class="settings-section warning-box"><strong>Server-wide settings</strong><p>KV cache type, Flash Attention, and parallelism require restarting the Ollama server. The restart button only controls an Ollama process started by this app.</p></section>
+        <section class="settings-section">
+          <h3>Ollama server</h3>
+          <label>Base URL<input id="ollamaBaseUrl"></label>
+          <label>KV cache precision<select id="kvCacheType"><option value="f16">f16 — highest quality</option><option value="q8_0">q8_0 — recommended</option><option value="q4_0">q4_0 — lowest memory</option></select></label>
+          <label class="switch-row"><span>Flash Attention</span><input id="flashAttention" type="checkbox"></label>
+          <div class="two-col"><label>Default context<input id="defaultContext" type="number" step="1024"></label><label>Parallel slots<input id="numParallel" type="number" min="1" max="32"></label></div>
+          <div class="two-col"><label>Max loaded models<input id="maxLoadedModels" type="number" min="1" max="32"></label><label>Max queue<input id="maxQueue" type="number" min="1"></label></div>
+          <label>Keep alive<input id="keepAlive" placeholder="10m"></label>
+          <label class="switch-row"><span>Disable Ollama cloud</span><input id="noCloud" type="checkbox"></label>
+          <label class="switch-row"><span>Managed Ollama process</span><input id="managedOllama" type="checkbox"></label>
+          <button id="saveRuntime" class="primary full">Save runtime settings</button>
+          <div class="button-row"><button id="startManaged">Start managed</button><button id="restartManaged">Restart managed</button><button id="stopManaged" class="danger ghost">Stop</button></div>
+        </section>
+        <section class="settings-section">
+          <h3>GPU and host</h3>
+          <div id="systemMetrics" class="system-metrics"></div>
+        </section>
+      </div>
+
+      <div id="settings-session" class="settings-page">
+        <section class="settings-section">
+          <h3>Session controls</h3>
+          <label>Session name<input id="sessionNameInput" placeholder="feature-auth-fix"></label>
+          <button id="setSessionName" class="full">Set session name</button>
+          <label>Steering delivery<select id="steeringMode"><option value="one-at-a-time">One at a time</option><option value="all">All</option></select></label>
+          <label>Follow-up delivery<select id="followUpMode"><option value="one-at-a-time">One at a time</option><option value="all">All</option></select></label>
+          <label class="switch-row"><span>Auto compaction</span><input id="autoCompaction" type="checkbox" checked></label>
+          <label class="switch-row"><span>Auto retry</span><input id="autoRetry" type="checkbox" checked></label>
+          <label class="switch-row"><span>Ask permission before tool calls (bash/write)</span><input id="confirmTools" type="checkbox"></label>
+          <label>Compaction instructions<textarea id="compactInstructions" rows="3" placeholder="Preserve decisions, changed files, failures, and remaining work."></textarea></label>
+          <button id="compactWithInstructions" class="full">Compact now</button>
+        </section>
+        <section class="settings-section">
+          <h3>Commands, skills, prompts</h3>
+          <button id="loadCommands" class="full">Load available commands</button>
+          <div id="commandList" class="command-list muted">Not loaded</div>
+        </section>
+        <section class="settings-section">
+          <h3>Direct shell via Pi</h3>
+          <textarea id="bashCommand" rows="3" placeholder="git status --short"></textarea>
+          <button id="runBash" class="full">Run command</button>
+          <pre id="bashOutput" class="bash-output"></pre>
+        </section>
+      </div>
+
+      <div id="settings-advanced" class="settings-page">
+        <section class="settings-section">
+          <h3>Raw Pi RPC</h3>
+          <p class="muted">All current and future Pi RPC commands can be sent here.</p>
+          <textarea id="rawRpc" rows="7">{"type":"get_state"}</textarea>
+          <button id="sendRawRpc" class="primary full">Send RPC command</button>
+          <pre id="rawRpcResult" class="rpc-result"></pre>
+        </section>
+        <section class="settings-section">
+          <h3>Pi installation</h3>
+          <div class="two-col"><label>Pi command<input id="piCommand"></label><label>Ollama command<input id="ollamaCommand"></label></div>
+          <label class="switch-row"><span>Trust project resources</span><input id="trustProjects" type="checkbox" checked></label>
+          <button id="saveCommands" class="full">Save command paths</button>
+          <button id="syncModels" class="full">Synchronize Ollama models to Pi</button>
+        </section>
+        <section class="settings-section">
+          <h3>Default AGENTS.md Template</h3>
+          <p class="muted">This template is automatically created as AGENTS.md when opening a new workspace without one.</p>
+          <textarea id="defaultAgentsMd" rows="8"></textarea>
+          <button id="saveDefaultAgentsMd" class="primary full">Save Default AGENTS.md Template</button>
+        </section>
+        <section class="settings-section">
+          <h3>Protocol inspector</h3>
+          <pre id="lastEvent" class="rpc-result">No events yet</pre>
+        </section>
+      </div>
+    </aside>
+  </div>
+
+  <div id="modal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <h2 id="modalTitle">Pi extension request</h2>
+      <p id="modalMessage"></p>
+      <div id="modalContent"></div>
+      <div class="modal-actions"><button id="modalCancel">Cancel</button><button id="modalConfirm" class="primary">Confirm</button></div>
+    </div>
+  </div>
+
+  <div id="toastHost" class="toast-host"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

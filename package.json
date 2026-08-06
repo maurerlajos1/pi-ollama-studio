@@ -1,0 +1,17 @@
+{
+  "name": "pi-ollama-studio",
+  "version": "1.1.2",
+  "private": true,
+  "type": "module",
+  "description": "Local Codex-style coding UI built on Pi RPC with Ollama model, context, KV-cache, GPU and session controls.",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "check": "node --check server.mjs && node --check src/config.mjs && node --check src/pi-rpc.mjs && node --check src/ollama.mjs && node --check src/sessions.mjs && node --check src/system.mjs && node --check public/app.js",
+    "test": "node --test",
+    "verify": "npm run check && npm test"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
