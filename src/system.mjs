@@ -244,22 +244,39 @@ export async function openNativeFolderPicker(initialPath = '') {
 
   if (platform === 'win32') {
     const psScript = `
-      [System.Reflection.Assembly]::LoadWithPartialName("System.windows.forms") | Out-Null
-      $f = New-Object System.Windows.Forms.FolderBrowserDialog
-      $f.Description = "Select Workspace Folder for Pi Ollama Studio"
-      $f.ShowNewFolderButton = $true
-      if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        Write-Output $f.SelectedPath
+      Add-Type -AssemblyName System.Windows.Forms
+      $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+      $dialog.Description = "Select Workspace Folder for Pi Ollama Studio"
+      $dialog.ShowNewFolderButton = $true
+      if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        [Console]::WriteLine($dialog.SelectedPath)
       }
     `.trim();
 
-    try {
-      const result = await runCommand('powershell', ['-NoProfile', '-Command', psScript], { timeoutMs: 120000 });
-      const selected = (result.stdout || '').trim();
-      return { ok: true, path: selected || null, canceled: !selected };
-    } catch (error) {
-      return { ok: false, error: error.message };
-    }
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+
+    return new Promise((resolve) => {
+      const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
+        windowsHide: false,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      let stdout = '';
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* noop */ }
+        resolve({ ok: false, error: 'Folder selection timed out' });
+      }, 120000);
+
+      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+      child.on('error', (err) => {
+        clearTimeout(timer);
+        resolve({ ok: false, error: err.message });
+      });
+      child.on('exit', () => {
+        clearTimeout(timer);
+        const selected = stdout.trim();
+        resolve({ ok: true, path: selected || null, canceled: !selected });
+      });
+    });
   } else if (platform === 'linux') {
     // 1. Try zenity
     try {
