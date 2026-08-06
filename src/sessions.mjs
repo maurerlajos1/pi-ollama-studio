@@ -99,3 +99,99 @@ export async function inspectSession(workspace, sessionPath) {
   }
   return { path: file, size: stat.size, entries, errors };
 }
+
+export async function forkSession(workspace, sourceSessionPath, targetNodeId, newSessionName = '') {
+  const { entries } = await inspectSession(workspace, sourceSessionPath);
+  const dir = await resolveWorkspaceSessionDir(workspace, { create: true });
+
+  const sliced = [];
+  if (!targetNodeId) {
+    sliced.push(...entries);
+  } else {
+    for (const entry of entries) {
+      sliced.push(entry);
+      if (entry.id === targetNodeId || entry.nodeId === targetNodeId || entry.messageId === targetNodeId) {
+        break;
+      }
+    }
+  }
+
+  const newId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const newFileName = `${newId}.jsonl`;
+  const targetFile = path.join(dir, newFileName);
+
+  if (sliced.length > 0 && (sliced[0].type === 'session_header' || sliced[0].id)) {
+    sliced[0] = {
+      ...sliced[0],
+      id: newId,
+      name: newSessionName || `Fork of ${path.basename(sourceSessionPath, '.jsonl')}`,
+      parentSession: path.basename(sourceSessionPath)
+    };
+  }
+
+  const content = sliced.map((e) => JSON.stringify(e)).join('\n') + '\n';
+  await fs.writeFile(targetFile, content, 'utf8');
+
+  return { ok: true, sessionId: newId, fileName: newFileName, path: targetFile };
+}
+
+export async function cloneSession(workspace, sourceSessionPath, newSessionName = '') {
+  return forkSession(workspace, sourceSessionPath, null, newSessionName || `Clone of ${path.basename(sourceSessionPath, '.jsonl')}`);
+}
+
+export async function createProjectFromNode(sourceWorkspace, sourceSessionPath, targetNodeId, newProjectName, parentDir = '') {
+  if (!newProjectName || !newProjectName.trim()) {
+    throw new Error('Project name is required');
+  }
+  const cleanName = newProjectName.trim().replace(/[\\/:*?"<>|]/g, '_');
+  const baseDir = parentDir ? path.resolve(parentDir) : path.dirname(path.resolve(sourceWorkspace));
+  const newWorkspaceDir = path.join(baseDir, cleanName);
+
+  await fs.mkdir(newWorkspaceDir, { recursive: true });
+
+  const agentsPath = path.join(newWorkspaceDir, 'AGENTS.md');
+  try {
+    await fs.access(agentsPath);
+  } catch {
+    const defaultContent = `# ${cleanName}\n\nProject created from Pi Session prompt node.\n\n## Instructions\n- Maintain clean architecture and test coverage.\n`;
+    await fs.writeFile(agentsPath, defaultContent, 'utf8');
+  }
+
+  const targetSessionDir = await resolveWorkspaceSessionDir(newWorkspaceDir, { create: true });
+  const { entries } = await inspectSession(sourceWorkspace, sourceSessionPath);
+
+  const sliced = [];
+  if (!targetNodeId) {
+    sliced.push(...entries);
+  } else {
+    for (const entry of entries) {
+      sliced.push(entry);
+      if (entry.id === targetNodeId || entry.nodeId === targetNodeId || entry.messageId === targetNodeId) {
+        break;
+      }
+    }
+  }
+
+  const newId = `session-${Date.now()}`;
+  const newFileName = `${newId}.jsonl`;
+  const targetSessionFile = path.join(targetSessionDir, newFileName);
+
+  if (sliced.length > 0) {
+    sliced[0] = {
+      ...sliced[0],
+      id: newId,
+      name: `${cleanName} Initial Session`,
+      cwd: newWorkspaceDir
+    };
+  }
+
+  const content = sliced.map((e) => JSON.stringify(e)).join('\n') + '\n';
+  await fs.writeFile(targetSessionFile, content, 'utf8');
+
+  return {
+    ok: true,
+    projectName: cleanName,
+    workspacePath: newWorkspaceDir,
+    sessionPath: targetSessionFile
+  };
+}

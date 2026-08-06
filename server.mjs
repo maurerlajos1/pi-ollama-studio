@@ -17,7 +17,7 @@ import {
   syncPiModels,
   unloadModel
 } from './src/ollama.mjs';
-import { inspectSession, listSessions } from './src/sessions.mjs';
+import { cloneSession, createProjectFromNode, forkSession, inspectSession, listSessions } from './src/sessions.mjs';
 import { browseDirectory, createDirectory, getGitStatus, getSystemStatus, gitCommit, gitDiff, gitStage, ManagedOllama, openNativeFolderPicker } from './src/system.mjs';
 import { isLoopbackHost } from './src/config.mjs';
 
@@ -324,6 +324,21 @@ async function handleApi(req, res, url) {
   }
   if (req.method === 'GET' && pathname === '/api/session/inspect') {
     json(res, 200, { ok: true, session: await inspectSession(searchParams.get('workspace'), searchParams.get('path')) });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/api/sessions/fork') {
+    const body = (await readBody(req).catch(() => ({}))) || {};
+    json(res, 200, await forkSession(body.workspace, body.sessionPath, body.targetNodeId, body.name));
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/api/sessions/clone') {
+    const body = (await readBody(req).catch(() => ({}))) || {};
+    json(res, 200, await cloneSession(body.workspace, body.sessionPath, body.name));
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/api/sessions/create-project') {
+    const body = (await readBody(req).catch(() => ({}))) || {};
+    json(res, 200, await createProjectFromNode(body.workspace, body.sessionPath, body.targetNodeId, body.name, body.parentDir));
     return true;
   }
 

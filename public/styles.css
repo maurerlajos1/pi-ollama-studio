@@ -491,4 +491,21 @@ kbd { font: 10px var(--mono); opacity: .8; }
 .folder-card-name { font: 12px var(--mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .selected-folder-input { flex: 1; font: 12px var(--mono); background: #090b0e; border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; }
 
+/* ── Session Tree & Node Cards ────────────────────────────────────────────── */
+.tree-node-card {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px;
+  padding: 12px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.tree-node-card:hover { border-color: var(--accent); }
+.node-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.node-badge { background: rgba(139, 124, 246, 0.18); color: var(--accent-2); border: 1px solid var(--accent); border-radius: 6px; padding: 2px 8px; font: bold 11px var(--mono); }
+.node-content { font: 13px/1.4 var(--font); color: var(--text); background: #080a0d; border-radius: 6px; padding: 8px 10px; border: 1px solid var(--border-soft); }
+.node-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.session-card { padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 7px; margin-bottom: 6px; cursor: pointer; }
+.session-card:hover { background: var(--panel-3); }
+.session-card.active { border-color: var(--accent); background: rgba(139, 124, 246, 0.12); }
+.session-name { font: 600 12px var(--font); color: var(--text); margin-bottom: 2px; }
+.session-meta { font: 10px var(--mono); color: var(--muted); margin-bottom: 6px; }
+.session-actions { display: flex; gap: 4px; }
+
 

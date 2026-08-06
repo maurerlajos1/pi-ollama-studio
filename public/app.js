@@ -1201,6 +1201,14 @@ function createSessionCard(node, { isFlatPath = false, altCount = 0 } = {}) {
       }
     };
     actions.append(forkBtn);
+
+    const createAppBtn = document.createElement('button');
+    createAppBtn.className = 'sm-btn secondary';
+    createAppBtn.textContent = '🚀 Create App from Prompt';
+    createAppBtn.onclick = async () => {
+      await promptCreateAppFromNode(app.pi.state?.sessionFile, entry.id, textContent);
+    };
+    actions.append(createAppBtn);
   }
 
   const jsonBtn = document.createElement('button');
@@ -2009,20 +2017,134 @@ $('#messages').addEventListener('click', async (e) => {
   } catch (e) { toast(e.message, 'error'); }
 });
 
-// ── Git panel event wiring ────────────────────────────────────────────────
-if ($('#gitCommitBtn')) $('#gitCommitBtn').onclick = gitCommit;
-if ($('#gitRefreshBtn')) $('#gitRefreshBtn').onclick = loadGitPanel;
-if ($('#gitStageAllBtn')) $('#gitStageAllBtn').onclick = async () => {
+// ── Session Tree & Branching Controller ────────────────────────────────────
+async function loadWorkspaceSessions() {
+  if (!app.workspace) return;
   try {
-    await post('/api/workspace/git/stage', { workspace: app.workspace, path: '.', stage: true, all: true });
-    await loadGitPanel();
-    toast('All changes staged', 'success');
-  } catch (e) { toast(e.message, 'error'); }
-};
-if ($('#gitCommitMessage')) {
-  $('#gitCommitMessage').onkeydown = (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) gitCommit();
-  };
+    const data = await api(`/api/sessions?workspace=${encodeURIComponent(app.workspace)}`);
+    if (data.ok && Array.isArray(data.sessions)) {
+      app.sessions = data.sessions;
+      renderSessionsList();
+    }
+  } catch (e) {
+    log('SESSIONS', e.message);
+  }
 }
+
+function renderSessionsList() {
+  const container = $('#sessionList');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!app.sessions || !app.sessions.length) {
+    container.innerHTML = '<div class="empty-state">No sessions</div>';
+    return;
+  }
+
+  for (const session of app.sessions) {
+    const card = document.createElement('div');
+    card.className = `session-card ${app.pi.state?.sessionFile === session.path ? 'active' : ''}`;
+    card.innerHTML = `
+      <div class="session-name">📄 ${escapeHtml(session.name || session.fileName)}</div>
+      <div class="session-meta muted">${new Date(session.modifiedAt).toLocaleString()}</div>
+      <div class="session-actions">
+        <button class="sm-btn ghost fork-btn" title="Fork from node">🍴 Fork</button>
+        <button class="sm-btn ghost clone-btn" title="Clone full session">📄 Clone</button>
+      </div>
+    `;
+
+    card.querySelector('.fork-btn').onclick = (e) => {
+      e.stopPropagation();
+      promptForkSession(session.path);
+    };
+
+    card.querySelector('.clone-btn').onclick = (e) => {
+      e.stopPropagation();
+      promptCloneSession(session.path);
+    };
+
+    card.onclick = () => inspectSessionTree(session.path);
+    container.append(card);
+  }
+}
+
+async function inspectSessionTree(sessionPath) {
+  if (!sessionPath) return;
+  try {
+    const data = await api(`/api/session/inspect?workspace=${encodeURIComponent(app.workspace)}&path=${encodeURIComponent(sessionPath)}`);
+    if (data.ok && data.session) {
+      sessionTreeData = data.session.entries || [];
+      renderSessionTree();
+      switchView('tree');
+    }
+  } catch (e) {
+    toast(`Failed to inspect session: ${e.message}`, 'error');
+  }
+}
+
+async function promptForkSession(sessionPath, nodeId = null) {
+  const name = prompt('Enter name for the forked session:');
+  if (!name || !name.trim()) return;
+  try {
+    const res = await post('/api/sessions/fork', {
+      workspace: app.workspace,
+      sessionPath,
+      targetNodeId: nodeId,
+      name: name.trim()
+    });
+    if (res.ok) {
+      toast(`Forked session: ${res.fileName}`, 'success');
+      await loadSessions();
+    } else {
+      toast(res.error || 'Failed to fork session', 'error');
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function promptCloneSession(sessionPath) {
+  const name = prompt('Enter name for cloned session:');
+  if (!name || !name.trim()) return;
+  try {
+    const res = await post('/api/sessions/clone', {
+      workspace: app.workspace,
+      sessionPath,
+      name: name.trim()
+    });
+    if (res.ok) {
+      toast(`Cloned session: ${res.fileName}`, 'success');
+      await loadSessions();
+    } else {
+      toast(res.error || 'Failed to clone session', 'error');
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function promptCreateAppFromNode(sessionPath, nodeId, promptText) {
+  const name = prompt(`Create new application from prompt: "${promptText.slice(0, 40)}..."\n\nEnter project name:`);
+  if (!name || !name.trim()) return;
+  try {
+    const res = await post('/api/sessions/create-project', {
+      workspace: app.workspace,
+      sessionPath,
+      targetNodeId: nodeId,
+      name: name.trim()
+    });
+    if (res.ok && res.workspacePath) {
+      toast(`Created project: ${res.projectName}`, 'success');
+      $('#workspacePath').value = res.workspacePath;
+      await applyWorkspace();
+    } else {
+      toast(res.error || 'Failed to create project', 'error');
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+if ($('#refreshSessions')) $('#refreshSessions').onclick = loadSessions;
+if ($('#refreshTree')) $('#refreshTree').onclick = () => app.currentInspectedSession?.path && inspectSessionTree(app.currentInspectedSession.path);
 
 initialize();

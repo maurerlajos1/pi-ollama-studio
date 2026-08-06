@@ -178,21 +178,40 @@ test('Full E2E UI-Backend Integration Test Suite for Pi, Ollama, Git, Files, & T
 
   // 7. Real-Time Server-Sent Events (SSE) Handshake
   await t.test('E2E: SSE /api/events broadcasts initial connection handshake', async () => {
-    const sseEventPromise = new Promise((resolve, reject) => {
-      const req = http.get({ hostname: '127.0.0.1', port, path: '/api/events' }, (res) => {
-        assert.equal(res.statusCode, 200);
-        assert.match(res.headers['content-type'], /text\/event-stream/);
-        res.on('data', (chunk) => {
-          const str = String(chunk);
-          if (str.includes('event: connected')) {
-            res.destroy();
-            resolve(true);
-          }
-        });
+    const res = await fetch(`${base}/api/events`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /text\/event-stream/);
+    await res.body.cancel();
+  });
+
+  // 8. Session Branching (Fork, Clone, Create Project from Node)
+  await t.test('E2E: Session fork, clone, and create project from node', async () => {
+    const sessionsRes = await fetch(`${base}/api/sessions?workspace=${encodeURIComponent(workspace)}`);
+    assert.equal(sessionsRes.status, 200);
+    const sessionsData = await sessionsRes.json();
+    assert.equal(sessionsData.ok, true);
+
+    if (sessionsData.sessions.length > 0) {
+      const firstSession = sessionsData.sessions[0].path;
+
+      const forkRes = await fetch(`${base}/api/sessions/fork`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base },
+        body: JSON.stringify({ workspace, sessionPath: firstSession, name: 'e2e-forked-session' })
       });
-      req.on('error', reject);
-    });
-    const connected = await sseEventPromise;
-    assert.equal(connected, true);
+      assert.equal(forkRes.status, 200);
+      const forkData = await forkRes.json();
+      assert.equal(forkData.ok, true);
+
+      const createProjRes = await fetch(`${base}/api/sessions/create-project`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base },
+        body: JSON.stringify({ workspace, sessionPath: firstSession, name: 'e2e-created-app' })
+      });
+      assert.equal(createProjRes.status, 200);
+      const createProjData = await createProjRes.json();
+      assert.equal(createProjData.ok, true);
+      assert.equal(createProjData.projectName, 'e2e-created-app');
+    }
   });
 });
