@@ -1637,6 +1637,27 @@ $('#docsSearch').oninput = (event) => filterDocumentation(event.target.value);
 $$('.settings-tabs button').forEach((button) => button.onclick = () => switchSettings(button.dataset.settings));
 $$('[data-prompt]').forEach((button) => button.onclick = () => { $('#composer').value = button.dataset.prompt; $('#composer').focus(); });
 $('#applyWorkspace').onclick = applyWorkspace;
+if ($('#selectFolder')) {
+  $('#selectFolder').onclick = async () => {
+    const btn = $('#selectFolder');
+    btn.disabled = true;
+    try {
+      const current = $('#workspacePath').value.trim() || app.workspace || '';
+      const response = await post('/api/workspace/select-folder', { current });
+      if (response.ok && response.path) {
+        $('#workspacePath').value = response.path;
+        await applyWorkspace();
+        toast('Workspace folder selected', 'success');
+      } else if (response.error) {
+        toast(response.error, 'error');
+      }
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
 if ($('#openTerminal')) $('#openTerminal').onclick = async () => {
   try {
     const sessionFile = app.pi.state?.sessionFile || null;

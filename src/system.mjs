@@ -238,3 +238,61 @@ export class ManagedOllama extends EventEmitter {
     return this.start();
   }
 }
+
+export async function openNativeFolderPicker(initialPath = '') {
+  const platform = os.platform();
+
+  if (platform === 'win32') {
+    const psScript = `
+      [System.Reflection.Assembly]::LoadWithPartialName("System.windows.forms") | Out-Null
+      $f = New-Object System.Windows.Forms.FolderBrowserDialog
+      $f.Description = "Select Workspace Folder for Pi Ollama Studio"
+      $f.ShowNewFolderButton = $true
+      if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        Write-Output $f.SelectedPath
+      }
+    `.trim();
+
+    try {
+      const result = await runCommand('powershell', ['-NoProfile', '-Command', psScript], { timeoutMs: 120000 });
+      const selected = (result.stdout || '').trim();
+      return { ok: true, path: selected || null, canceled: !selected };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  } else if (platform === 'linux') {
+    // 1. Try zenity
+    try {
+      const res = await runCommand('zenity', ['--file-selection', '--directory', '--title=Select Workspace Folder for Pi Ollama Studio'], { timeoutMs: 120000 });
+      const selected = (res.stdout || '').trim();
+      if (res.code === 0 && selected) return { ok: true, path: selected, canceled: false };
+    } catch { /* try next */ }
+
+    // 2. Try kdialog
+    try {
+      const res = await runCommand('kdialog', ['--getexistingdirectory', '--title=Select Workspace Folder for Pi Ollama Studio'], { timeoutMs: 120000 });
+      const selected = (res.stdout || '').trim();
+      if (res.code === 0 && selected) return { ok: true, path: selected, canceled: false };
+    } catch { /* try next */ }
+
+    // 3. Try python3 tkinter
+    try {
+      const pyScript = `import tkinter, tkinter.filedialog; root = tkinter.Tk(); root.withdraw(); p = tkinter.filedialog.askdirectory(title="Select Workspace Folder"); print(p)`;
+      const res = await runCommand('python3', ['-c', pyScript], { timeoutMs: 120000 });
+      const selected = (res.stdout || '').trim();
+      if (res.code === 0 && selected) return { ok: true, path: selected, canceled: false };
+    } catch { /* failed */ }
+
+    return { ok: false, error: 'No native folder picker (zenity, kdialog, or python3 tkinter) installed on Linux.' };
+  } else if (platform === 'darwin') {
+    try {
+      const res = await runCommand('osascript', ['-e', 'POSIX path of (choose folder with prompt "Select Workspace Folder for Pi Ollama Studio")'], { timeoutMs: 120000 });
+      const selected = (res.stdout || '').trim();
+      return { ok: true, path: selected || null, canceled: !selected };
+    } catch (error) {
+      return { ok: true, path: null, canceled: true };
+    }
+  }
+
+  return { ok: false, error: `Unsupported platform: ${platform}` };
+}

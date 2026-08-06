@@ -75,7 +75,17 @@ test('Full E2E UI-Backend Integration Test Suite for Pi, Ollama, Git, Files, & T
   });
 
   // 3. Workspace File Tree & File Reading/Writing
-  await t.test('E2E: Workspace tree, file reading, file saving, and containment', async () => {
+  await t.test('E2E: Workspace tree, folder picker endpoint, file reading/saving, and containment', async () => {
+    const pickerRes = await fetch(`${base}/api/workspace/select-folder`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ current: workspace })
+    });
+    assert.equal(pickerRes.status, 200);
+    const pickerData = await pickerRes.json();
+    assert.equal(typeof pickerData, 'object');
+    assert.equal(typeof pickerData.ok, 'boolean');
+
     const treeRes = await fetch(`${base}/api/workspace/tree?workspace=${encodeURIComponent(workspace)}`);
     assert.equal(treeRes.status, 200);
     const treeData = await treeRes.json();
