@@ -199,8 +199,10 @@ function renderHealth() {
 // Called whenever the Ollama model list, running list, or GPU status changes.
 function renderActiveModel() {
   const id = app.pi.state?.model?.id || getSelectedModelId() || '';
-  const model = app.ollama.models.find((item) => (item.model || item.name) === id);
-  const running = app.ollama.running.find((item) => (item.model || item.name) === id);
+  const models = app.ollama?.models || [];
+  const runningList = app.ollama?.running || [];
+  const model = models.find((item) => (item.model || item.name) === id);
+  const running = runningList.find((item) => (item.model || item.name) === id);
   const gpu = app.system.gpu?.gpus?.[0];
 
   $('#activeModelCard').innerHTML = id ? `<strong>${escapeHtml(id)}</strong><span>${escapeHtml(model?.details?.parameter_size || 'Model')} · ${escapeHtml(model?.details?.quantization_level || '')}</span>` : '<strong>None</strong><span>Select or type a model</span>';
@@ -272,9 +274,11 @@ function modelCapabilityBadges(model) {
 }
 
 function renderModelLibrary() {
-  const host = $('#modelLibrary'); host.innerHTML = '';
-  for (const model of app.ollama.models || []) {
-    const id = model.model || model.name; const running = app.ollama.running.find((item) => (item.model || item.name) === id);
+  const host = $('#modelLibrary'); if (!host) return; host.innerHTML = '';
+  const models = app.ollama?.models || [];
+  const runningList = app.ollama?.running || [];
+  for (const model of models) {
+    const id = model.model || model.name; const running = runningList.find((item) => (item.model || item.name) === id);
     const node = document.createElement('div'); node.className = 'model-item';
     const badges = modelCapabilityBadges(model);
     node.innerHTML = `<strong>${escapeHtml(id)}</strong><small>${escapeHtml(model.details?.parameter_size || '')} ${escapeHtml(model.details?.quantization_level || '')} · ${formatBytes(model.size)}${running ? ` · loaded ${formatBytes(running.size_vram)}` : ''}</small>${badges ? `<div class="model-cap-badges">${badges}</div>` : ''}<div class="model-actions"><button data-use>Use</button><button data-unload title="Unload">⏏</button><button data-delete title="Delete">×</button></div>`;
@@ -1590,7 +1594,12 @@ function connectEvents() {
     log('PROTOCOL ERROR', value);
   });
   source.addEventListener('ollama_operation', (e) => { const value = JSON.parse(e.data); $('#ollamaProgress').textContent = `${value.operation} ${value.model || ''}: ${value.event?.status || JSON.stringify(value.event)}`; });
-  source.addEventListener('ollama_models_changed', (e) => { app.ollama = JSON.parse(e.data); refreshModelSelectors(); renderHealth(); });
+  source.addEventListener('ollama_models_changed', (e) => {
+    const raw = JSON.parse(e.data);
+    app.ollama = { models: [], running: [], ...(raw || {}) };
+    refreshModelSelectors();
+    renderHealth();
+  });
   source.addEventListener('ollama_log', (e) => log('OLLAMA', JSON.parse(e.data).text));
   source.addEventListener('server_error', (e) => {
     const value = JSON.parse(e.data);
@@ -1606,7 +1615,14 @@ function connectEvents() {
 
 async function initialize() {
   try {
-    const value = await api('/api/bootstrap'); Object.assign(app, { config: value.config, system: value.system, ollama: value.ollama, profiles: value.profiles, pi: value.pi });
+    const value = await api('/api/bootstrap');
+    Object.assign(app, {
+      config: value.config || {},
+      system: value.system || {},
+      ollama: { models: [], running: [], ...(value.ollama || {}) },
+      profiles: value.profiles || [],
+      pi: value.pi || { status: {}, state: null, stats: null }
+    });
     applyConfig(); refreshModelSelectors(); renderSystem(); renderHealth(); renderPiSnapshot(); installContextHelp();
     if (app.workspace) await Promise.allSettled([loadWorkspaceTree(), loadSessions(), loadGit()]); if (app.pi.status?.running) { await refreshThinkingLevels(); await refreshMessages(); }
   } catch (error) { toast(error.message, 'error'); log('BOOTSTRAP ERROR', error.message); }
