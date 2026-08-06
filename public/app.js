@@ -152,8 +152,11 @@ function refreshModelSelectors() {
     if (select.id === 'topModel') option(select, '__custom__', 'Custom / Type model name…');
     if (current && [...select.options].some((item) => item.value === current)) select.value = current;
   }
-  const desired = app.pi.state?.model?.id || app.config.defaultModel || savedModel || '';
-  if (desired && [...$('#topModel').options].some((item) => item.value === desired)) $('#topModel').value = desired;
+  const desired = app.pi.state?.model?.id || app.config.defaultModel || savedModel || (models[0] ? (models[0].model || models[0].name) : '');
+  if (desired && [...$('#topModel').options].some((item) => item.value === desired)) {
+    $('#topModel').value = desired;
+    localStorage.setItem('studio_selected_model', desired);
+  }
   if (!$('#profileBaseModel').value && models[0]) $('#profileBaseModel').value = models[0].model || models[0].name;
   renderModelLibrary(); renderActiveModel();
 }
