@@ -43,7 +43,7 @@ test('Full E2E UI-Backend Integration Test Suite for Pi, Ollama, Git, Files, & T
     child.stderr.destroy();
     await new Promise((resolve) => setTimeout(resolve, 150));
     child.kill(process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM');
-    await fs.rm(home, { recursive: true, force: true });
+    await fs.rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   });
 
   const base = `http://127.0.0.1:${port}`;
@@ -75,15 +75,7 @@ test('Full E2E UI-Backend Integration Test Suite for Pi, Ollama, Git, Files, & T
   });
 
   // 3. Workspace File Tree & File Reading/Writing
-  await t.test('E2E: Workspace tree, folder picker endpoint, file reading/saving, and containment', async () => {
-    const pickerRes = await fetch(`${base}/api/workspace/select-folder`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ current: workspace })
-    });
-    assert.equal(pickerRes.status, 200);
-    const pickerData = await pickerRes.json();
-    assert.equal(typeof pickerData, 'object');
+  await t.test('E2E: Workspace tree, in-app directory browser, file reading/saving, and containment', async () => {
     const browseRes = await fetch(`${base}/api/workspace/browse?path=${encodeURIComponent(workspace)}`);
     assert.equal(browseRes.status, 200);
     const browseData = await browseRes.json();

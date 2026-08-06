@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import os from 'node:os';
-import process from 'node:process';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { readConfig } from './config.mjs';
 
 let versionCache = null;
@@ -326,7 +327,7 @@ export async function openNativeFolderPicker(initialPath = '') {
 export async function browseDirectory(targetPath) {
   const resolved = targetPath ? path.resolve(targetPath) : process.cwd();
   try {
-    const entries = await fs.promises.readdir(resolved, { withFileTypes: true });
+    const entries = await fs.readdir(resolved, { withFileTypes: true });
     const folders = [];
     for (const entry of entries) {
       if (entry.isDirectory() && !entry.name.startsWith('.')) {
@@ -341,7 +342,7 @@ export async function browseDirectory(targetPath) {
       for (const letter of ['C', 'D', 'E', 'F', 'G', 'H']) {
         try {
           const drivePath = `${letter}:\\`;
-          await fs.promises.access(drivePath);
+          await fs.access(drivePath);
           drives.push({ name: `${letter}:`, path: drivePath });
         } catch { /* ignore non-existent drive */ }
       }
