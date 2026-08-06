@@ -1718,7 +1718,7 @@ $('#compactNow').onclick = async () => {
 $('#attachImage').onclick = () => $('#imageInput').click(); $('#imageInput').onchange = (e) => addImages(e.target.files);
 $('#codeEditor').oninput = () => markEditorDirty($('#codeEditor').value !== app.editorOriginal); $('#saveFile').onclick = saveFile; $('#reloadFile').onclick = () => app.currentFile && openFile(app.currentFile.path);
 $('#refreshTree').onclick = () => loadSessionTree(false);
-if ($('#showDiffView')) $('#showDiffView').onclick = renderGitDiffView;
+if ($('#showDiffView')) $('#showDiffView').onclick = () => loadGit();
 $('#refreshEntries').onclick = () => loadSessionTree(true);
 $('#exportSession').onclick = async () => { try { const response = await rpc({ type: 'export_html' }); toast(`Exported: ${response.data?.path}`, 'success'); } catch {} };
 
