@@ -1637,6 +1637,20 @@ $('#docsSearch').oninput = (event) => filterDocumentation(event.target.value);
 $$('.settings-tabs button').forEach((button) => button.onclick = () => switchSettings(button.dataset.settings));
 $$('[data-prompt]').forEach((button) => button.onclick = () => { $('#composer').value = button.dataset.prompt; $('#composer').focus(); });
 $('#applyWorkspace').onclick = applyWorkspace;
+if ($('#nativeFolderInput')) {
+  $('#nativeFolderInput').onchange = (e) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      const first = files[0];
+      const relPath = first.webkitRelativePath || first.name;
+      const folderName = relPath.split('/')[0] || relPath.split('\\')[0];
+      if (folderName) {
+        $('#workspacePath').value = folderName;
+        applyWorkspace();
+      }
+    }
+  };
+}
 if ($('#selectFolder')) {
   $('#selectFolder').onclick = async () => {
     const btn = $('#selectFolder');
@@ -1648,11 +1662,11 @@ if ($('#selectFolder')) {
         $('#workspacePath').value = response.path;
         await applyWorkspace();
         toast('Workspace folder selected', 'success');
-      } else if (response.error) {
-        toast(response.error, 'error');
+      } else {
+        if ($('#nativeFolderInput')) $('#nativeFolderInput').click();
       }
     } catch (e) {
-      toast(e.message, 'error');
+      if ($('#nativeFolderInput')) $('#nativeFolderInput').click();
     } finally {
       btn.disabled = false;
     }

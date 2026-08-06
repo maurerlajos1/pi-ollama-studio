@@ -41,7 +41,7 @@
     <aside class="left-panel panel">
       <section class="panel-section workspace-section">
         <div class="section-title"><span>Workspace</span><button id="refreshWorkspace" class="icon-btn" title="Refresh">↻</button></div>
-        <div class="workspace-row"><input id="workspacePath" placeholder="C:\\projects\\app or /home/me/app"><button id="selectFolder" class="icon-btn" title="Browse / Select Folder Dialog (Windows & Linux)">📁</button><button id="applyWorkspace">Open</button></div>
+        <div class="workspace-row"><input id="workspacePath" placeholder="C:\\projects\\app or /home/me/app"><input type="file" id="nativeFolderInput" webkitdirectory directory style="display:none"><button id="selectFolder" class="icon-btn" title="Browse / Select Folder Dialog (Windows & Linux)">📁</button><button id="applyWorkspace">Open</button></div>
         <div id="gitSummary" class="git-summary muted">No workspace selected</div>
       </section>
 

@@ -244,19 +244,28 @@ export async function openNativeFolderPicker(initialPath = '') {
 
   if (platform === 'win32') {
     const psScript = `
-      Add-Type -AssemblyName System.Windows.Forms
-      $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-      $dialog.Description = "Select Workspace Folder for Pi Ollama Studio"
-      $dialog.ShowNewFolderButton = $true
-      if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        [Console]::WriteLine($dialog.SelectedPath)
+      try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.Application]::EnableVisualStyles()
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dialog.Description = "Select Workspace Folder for Pi Ollama Studio"
+        $dialog.ShowNewFolderButton = $true
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+          [Console]::WriteLine($dialog.SelectedPath)
+        }
+      } catch {
+        $shell = New-Object -ComObject Shell.Application
+        $folder = $shell.BrowseForFolder(0, "Select Workspace Folder for Pi Ollama Studio", 0, 0)
+        if ($folder) {
+          [Console]::WriteLine($folder.Self.Path)
+        }
       }
     `.trim();
 
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
 
     return new Promise((resolve) => {
-      const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
+      const child = spawn('powershell.exe', ['-NoProfile', '-Sta', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
         windowsHide: false,
         stdio: ['ignore', 'pipe', 'pipe']
       });
