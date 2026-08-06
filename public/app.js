@@ -1725,6 +1725,26 @@ function renderFolderBrowserModal() {
     upBtn.onclick = () => parent && loadBrowseDirectory(parent);
   }
 
+  // Render New Folder Button
+  const newFolderBtn = $('#folderNavNewFolder');
+  if (newFolderBtn) {
+    newFolderBtn.onclick = async () => {
+      const name = prompt('Enter new folder name:');
+      if (!name || !name.trim()) return;
+      try {
+        const res = await post('/api/workspace/mkdir', { parent: currentBrowserState.current, name: name.trim() });
+        if (res.ok && res.path) {
+          toast(`Folder created: ${res.name}`, 'success');
+          await loadBrowseDirectory(res.path);
+        } else {
+          toast(res.error || 'Failed to create folder', 'error');
+        }
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+    };
+  }
+
   // Render Breadcrumbs
   const breadcrumbs = $('#folderBreadcrumbs');
   if (breadcrumbs) {

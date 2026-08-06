@@ -361,3 +361,17 @@ export async function browseDirectory(targetPath) {
     return { ok: false, error: error.message, current: resolved, parent: null, drives: [], folders: [] };
   }
 }
+
+export async function createDirectory(parentPath, folderName) {
+  if (!folderName || typeof folderName !== 'string' || !folderName.trim()) {
+    return { ok: false, error: 'Folder name cannot be empty' };
+  }
+  const cleanName = folderName.trim().replace(/[\\/:*?"<>|]/g, '_');
+  const target = path.join(parentPath ? path.resolve(parentPath) : process.cwd(), cleanName);
+  try {
+    await fs.mkdir(target, { recursive: true });
+    return { ok: true, path: target, name: cleanName };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}

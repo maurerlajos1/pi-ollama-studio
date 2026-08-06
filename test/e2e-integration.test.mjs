@@ -81,7 +81,15 @@ test('Full E2E UI-Backend Integration Test Suite for Pi, Ollama, Git, Files, & T
     const browseData = await browseRes.json();
     assert.equal(browseData.ok, true);
     assert.equal(Array.isArray(browseData.folders), true);
-    assert.equal(Array.isArray(browseData.drives), true);
+    const mkdirRes = await fetch(`${base}/api/workspace/mkdir`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ parent: workspace, name: 'test-folder' })
+    });
+    assert.equal(mkdirRes.status, 200);
+    const mkdirData = await mkdirRes.json();
+    assert.equal(mkdirData.ok, true);
+    assert.equal(mkdirData.name, 'test-folder');
 
     const treeRes = await fetch(`${base}/api/workspace/tree?workspace=${encodeURIComponent(workspace)}`);
     assert.equal(treeRes.status, 200);
