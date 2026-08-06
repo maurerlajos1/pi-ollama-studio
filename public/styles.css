@@ -446,3 +446,7 @@ kbd { font: 10px var(--mono); opacity: .8; }
 .sm-btn.secondary { background: var(--panel-3); }
 .sm-btn.ghost { background: transparent; border-color: transparent; }
 
+/* ── Utility Classes ──────────────────────────────────────────────────────── */
+.error-text { color: var(--red); }
+
+

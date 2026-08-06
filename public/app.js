@@ -525,14 +525,25 @@ function handlePiEvent(event) {
     case 'message_update': {
       const node = ensureStreamingAssistant(); const delta = event.assistantMessageEvent || {};
       if (delta.type === 'text_delta') {
-        const target = $('.message-text', node); target.dataset.raw = (target.dataset.raw || '') + (delta.delta || ''); target.innerHTML = markdown(target.dataset.raw);
+        const target = $('.message-text', node);
+        target.dataset.raw = (target.dataset.raw || '') + (delta.delta || '');
+        if (!node._renderScheduled) {
+          node._renderScheduled = true;
+          requestAnimationFrame(() => {
+            node._renderScheduled = false;
+            target.innerHTML = markdown(target.dataset.raw);
+            $('#messages').scrollTop = $('#messages').scrollHeight;
+          });
+        }
       } else if (delta.type === 'thinking_delta') {
         let block = $('.thinking-block', node); if (!block) { const details = document.createElement('details'); details.innerHTML = '<summary>Thinking</summary><div class="thinking-block"></div>'; $('.message-content', node).insertBefore(details, $('.message-text', node)); block = $('.thinking-block', node); }
         block.textContent += delta.delta || '';
+        $('#messages').scrollTop = $('#messages').scrollHeight;
       } else if (delta.type === 'toolcall_end') {
         const tool = delta.toolCall || {}; addToolCard(node, tool.id || tool.toolCallId || crypto.randomUUID(), tool.name, tool.arguments || tool.args || {}, 'planned');
+        $('#messages').scrollTop = $('#messages').scrollHeight;
       }
-      $('#messages').scrollTop = $('#messages').scrollHeight; break;
+      break;
     }
     case 'tool_execution_start': {
       const node = ensureStreamingAssistant(); let card = app.toolCards.get(event.toolCallId);
