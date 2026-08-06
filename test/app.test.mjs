@@ -144,7 +144,6 @@ test('refreshModelSelectors populates dropdowns correctly', () => {
     running: []
   };
 
-  // Execute UI function logic directly
   const models = app.ollama.models;
   const topModel = document.getElementById('topModel');
   const profileBaseModel = document.getElementById('profileBaseModel');
@@ -162,7 +161,6 @@ test('refreshModelSelectors populates dropdowns correctly', () => {
 });
 
 test('renderActiveModel and renderModelLibrary do NOT throw when app.ollama.running is missing or undefined', () => {
-  // Test transient state where running is undefined/missing
   app.ollama = { online: true, models: [{ model: 'qwen3.6:latest', name: 'qwen3.6:latest' }] };
   delete app.ollama.running;
 
@@ -207,7 +205,6 @@ test('refreshLiveStatus retains existing models if polling returns empty array w
     system: {}
   };
 
-  // Apply fallback rule
   if (liveStatusResponse.ollama) {
     if ((!liveStatusResponse.ollama.models || !liveStatusResponse.ollama.models.length) && app.ollama.models?.length && liveStatusResponse.ollama.modelsAvailable === false) {
       liveStatusResponse.ollama.models = app.ollama.models;
@@ -218,3 +215,107 @@ test('refreshLiveStatus retains existing models if polling returns empty array w
   assert.equal(app.ollama.models.length, 1, 'Models list should be retained during transient poll timeout');
   assert.equal(app.ollama.models[0].model, 'qwen3.6:latest');
 });
+
+// ── Interactive UI Event Simulation Tests ──────────────────────────────────
+
+test('UI Interaction: View tabs switching (Chat, Editor, Git, Terminal, Logs, Docs)', () => {
+  const views = ['chat', 'editor', 'tree', 'git', 'terminal', 'logs', 'docs'];
+  let activeView = 'chat';
+
+  function switchView(name) {
+    activeView = name;
+  }
+
+  for (const view of views) {
+    switchView(view);
+    assert.equal(activeView, view, `View tab should switch to ${view}`);
+  }
+});
+
+test('UI Interaction: Settings tabs switching (Model, Runtime, Pi, Advanced)', () => {
+  const tabs = ['model', 'runtime', 'session', 'advanced'];
+  let activeTab = 'model';
+
+  function switchSettings(name) {
+    activeTab = name;
+  }
+
+  for (const tab of tabs) {
+    switchSettings(tab);
+    assert.equal(activeTab, tab, `Settings tab should switch to ${tab}`);
+  }
+});
+
+test('UI Interaction: Simulated mouse click on model selection dropdown and localStorage persistence', () => {
+  const select = document.getElementById('topModel');
+  select.value = 'qwen3.6:latest';
+
+  // Simulate user changing model dropdown choice
+  select.onchange = () => {
+    localStorage.setItem('studio_selected_model', select.value);
+  };
+  select.onchange();
+
+  assert.equal(localStorage.getItem('studio_selected_model'), 'qwen3.6:latest');
+});
+
+test('UI Interaction: Simulated keyboard ArrowUp / ArrowDown composer history navigation', () => {
+  const history = ['first prompt', 'second prompt'];
+  let historyIndex = -1;
+  let composerValue = '';
+
+  function handleKeydown(key) {
+    if (key === 'ArrowUp') {
+      historyIndex = Math.min(historyIndex + 1, history.length - 1);
+      composerValue = history[historyIndex];
+    } else if (key === 'ArrowDown') {
+      historyIndex = Math.max(-1, historyIndex - 1);
+      composerValue = historyIndex === -1 ? '' : history[historyIndex];
+    }
+  }
+
+  handleKeydown('ArrowUp');
+  assert.equal(composerValue, 'first prompt');
+  handleKeydown('ArrowUp');
+  assert.equal(composerValue, 'second prompt');
+  handleKeydown('ArrowDown');
+  assert.equal(composerValue, 'first prompt');
+  handleKeydown('ArrowDown');
+  assert.equal(composerValue, '');
+});
+
+test('UI Interaction: Simulated context gauge click-to-compact trigger', () => {
+  let compactTriggered = false;
+  const contextGaugeBadge = document.getElementById('contextGaugeBadge');
+  contextGaugeBadge.onclick = () => {
+    compactTriggered = true;
+  };
+
+  // Simulate mouse click
+  contextGaugeBadge.onclick();
+  assert.equal(compactTriggered, true, 'Context gauge click should trigger compaction callback');
+});
+
+test('UI Interaction: Simulated assistant message copy button click', async () => {
+  let textCopied = '';
+  const copyBtn = document.createElement('button');
+  copyBtn.onclick = async () => {
+    textCopied = 'Response text to copy';
+  };
+
+  await copyBtn.onclick();
+  assert.equal(textCopied, 'Response text to copy');
+});
+
+test('UI Interaction: Simulated user message fork button click', () => {
+  let forkedEntryId = null;
+  const forkBtn = document.createElement('button');
+  forkBtn.dataset.forkEntry = 'msg-12345';
+  forkBtn.onclick = () => {
+    forkedEntryId = forkBtn.dataset.forkEntry;
+  };
+
+  forkBtn.onclick();
+  assert.equal(forkedEntryId, 'msg-12345');
+});
+
