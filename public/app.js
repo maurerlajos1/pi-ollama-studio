@@ -1651,26 +1651,127 @@ if ($('#nativeFolderInput')) {
     }
   };
 }
-if ($('#selectFolder')) {
-  $('#selectFolder').onclick = async () => {
-    const btn = $('#selectFolder');
-    btn.disabled = true;
-    try {
-      const current = $('#workspacePath').value.trim() || app.workspace || '';
-      const response = await post('/api/workspace/select-folder', { current });
-      if (response.ok && response.path) {
-        $('#workspacePath').value = response.path;
-        await applyWorkspace();
-        toast('Workspace folder selected', 'success');
-      } else {
-        if ($('#nativeFolderInput')) $('#nativeFolderInput').click();
-      }
-    } catch (e) {
-      if ($('#nativeFolderInput')) $('#nativeFolderInput').click();
-    } finally {
-      btn.disabled = false;
+if ($('#selectFolder')) $('#selectFolder').onclick = () => openFolderBrowserModal();
+if ($('#closeFolderModal')) $('#closeFolderModal').onclick = closeFolderBrowserModal;
+if ($('#cancelSelectFolder')) $('#cancelSelectFolder').onclick = closeFolderBrowserModal;
+if ($('#confirmSelectFolder')) {
+  $('#confirmSelectFolder').onclick = async () => {
+    const chosen = $('#selectedFolderPath').value || currentBrowserState.selected || currentBrowserState.current;
+    if (chosen) {
+      $('#workspacePath').value = chosen;
+      closeFolderBrowserModal();
+      await applyWorkspace();
+      toast('Workspace folder opened', 'success');
     }
   };
+}
+
+// ── In-App Folder Browser Modal Controller ──────────────────────────────
+let currentBrowserState = { current: '', parent: null, drives: [], folders: [], selected: '' };
+
+async function openFolderBrowserModal(startPath = '') {
+  const modal = $('#folderBrowserModal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  await loadBrowseDirectory(startPath || app.workspace || $('#workspacePath').value || '');
+}
+
+function closeFolderBrowserModal() {
+  const modal = $('#folderBrowserModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function loadBrowseDirectory(targetPath = '') {
+  try {
+    const data = await api(`/api/workspace/browse?path=${encodeURIComponent(targetPath)}`);
+    if (data.ok) {
+      currentBrowserState = {
+        current: data.current,
+        parent: data.parent,
+        drives: data.drives || [],
+        folders: data.folders || [],
+        selected: data.current
+      };
+      renderFolderBrowserModal();
+    } else {
+      toast(data.error || 'Failed to list directory', 'error');
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function renderFolderBrowserModal() {
+  const { current, parent, drives, folders, selected } = currentBrowserState;
+  if ($('#selectedFolderPath')) $('#selectedFolderPath').value = selected || current;
+
+  // Render Drives
+  const driveBar = $('#driveBar');
+  if (driveBar) {
+    driveBar.innerHTML = '';
+    for (const drive of drives) {
+      const btn = document.createElement('button');
+      btn.className = `drive-btn ${current.toLowerCase().startsWith(drive.path.toLowerCase()) ? 'active' : ''}`;
+      btn.textContent = drive.name;
+      btn.onclick = () => loadBrowseDirectory(drive.path);
+      driveBar.append(btn);
+    }
+  }
+
+  // Render Parent Up Button
+  const upBtn = $('#folderNavUp');
+  if (upBtn) {
+    upBtn.disabled = !parent;
+    upBtn.onclick = () => parent && loadBrowseDirectory(parent);
+  }
+
+  // Render Breadcrumbs
+  const breadcrumbs = $('#folderBreadcrumbs');
+  if (breadcrumbs) {
+    breadcrumbs.innerHTML = '';
+    const parts = current.split(/[/\\]/).filter(Boolean);
+    let accumulated = current.startsWith('/') ? '/' : '';
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      accumulated += (accumulated.endsWith('/') || accumulated.endsWith('\\') || !accumulated ? '' : '/') + part;
+      if (i === 0 && accumulated.endsWith(':')) accumulated += '/';
+      const currentAcc = accumulated;
+      const btn = document.createElement('button');
+      btn.className = 'crumb-btn';
+      btn.textContent = part;
+      btn.onclick = () => loadBrowseDirectory(currentAcc);
+      breadcrumbs.append(btn);
+      if (i < parts.length - 1) {
+        const sep = document.createElement('span');
+        sep.textContent = ' / ';
+        breadcrumbs.append(sep);
+      }
+    }
+  }
+
+  // Render Folders Grid
+  const grid = $('#folderGrid');
+  if (grid) {
+    grid.innerHTML = '';
+    if (!folders.length) {
+      grid.innerHTML = '<div class="empty-state">No subfolders in this directory</div>';
+      return;
+    }
+
+    for (const folder of folders) {
+      const card = document.createElement('div');
+      card.className = `folder-card ${selected === folder.path ? 'selected' : ''}`;
+      card.innerHTML = `<span class="folder-card-icon">📁</span><span class="folder-card-name">${escapeHtml(folder.name)}</span>`;
+      card.onclick = () => {
+        currentBrowserState.selected = folder.path;
+        if ($('#selectedFolderPath')) $('#selectedFolderPath').value = folder.path;
+        $$('.folder-card', grid).forEach((c) => c.classList.remove('selected'));
+        card.classList.add('selected');
+      };
+      card.ondblclick = () => loadBrowseDirectory(folder.path);
+      grid.append(card);
+    }
+  }
 }
 if ($('#openTerminal')) $('#openTerminal').onclick = async () => {
   try {

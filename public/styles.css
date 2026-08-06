@@ -449,4 +449,46 @@ kbd { font: 10px var(--mono); opacity: .8; }
 /* ── Utility Classes ──────────────────────────────────────────────────────── */
 .error-text { color: var(--red); }
 
+/* ── Modal Overlay & Folder Browser Card ───────────────────────────────────── */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(4px);
+  display: grid; place-items: center; z-index: 1000; padding: 20px;
+}
+.modal-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.6); display: flex; flex-direction: column; overflow: hidden;
+}
+.folder-browser-card { width: min(680px, 92vw); max-height: 85vh; height: 520px; }
+.modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid var(--border); background: #101319;
+}
+.modal-header h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
+.modal-body { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 14px; overflow: hidden; }
+.modal-footer {
+  display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+  border-top: 1px solid var(--border); background: var(--panel-2);
+}
+.drive-bar { display: flex; gap: 6px; flex-wrap: wrap; }
+.drive-btn { padding: 4px 10px; font-size: 11px; font-family: var(--mono); background: var(--panel-3); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.drive-btn:hover, .drive-btn.active { border-color: var(--accent); color: var(--accent-2); background: rgba(139, 124, 246, 0.12); }
+.folder-nav-bar { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.folder-breadcrumbs { display: flex; gap: 4px; overflow-x: auto; font: 12px var(--mono); color: var(--muted); flex: 1; align-items: center; }
+.crumb-btn { background: none; border: none; padding: 2px 4px; color: var(--muted); cursor: pointer; font: inherit; }
+.crumb-btn:hover { color: var(--text); text-decoration: underline; }
+.folder-grid {
+  flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px; padding: 6px; border: 1px solid var(--border-soft); border-radius: 8px; background: #0c0f14;
+}
+.folder-card {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--panel-2);
+  border: 1px solid var(--border-soft); border-radius: 7px; cursor: pointer; user-select: none;
+  transition: background 0.12s, border-color 0.12s;
+}
+.folder-card:hover { background: var(--panel-3); border-color: var(--border); }
+.folder-card.selected { border-color: var(--accent); background: rgba(139, 124, 246, 0.15); }
+.folder-card-icon { font-size: 16px; flex-shrink: 0; }
+.folder-card-name { font: 12px var(--mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.selected-folder-input { flex: 1; font: 12px var(--mono); background: #090b0e; border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; }
+
 

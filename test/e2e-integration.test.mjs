@@ -84,7 +84,12 @@ test('Full E2E UI-Backend Integration Test Suite for Pi, Ollama, Git, Files, & T
     assert.equal(pickerRes.status, 200);
     const pickerData = await pickerRes.json();
     assert.equal(typeof pickerData, 'object');
-    assert.equal(typeof pickerData.ok, 'boolean');
+    const browseRes = await fetch(`${base}/api/workspace/browse?path=${encodeURIComponent(workspace)}`);
+    assert.equal(browseRes.status, 200);
+    const browseData = await browseRes.json();
+    assert.equal(browseData.ok, true);
+    assert.equal(Array.isArray(browseData.folders), true);
+    assert.equal(Array.isArray(browseData.drives), true);
 
     const treeRes = await fetch(`${base}/api/workspace/tree?workspace=${encodeURIComponent(workspace)}`);
     assert.equal(treeRes.status, 200);

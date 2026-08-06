@@ -519,6 +519,29 @@
     </aside>
   </div>
 
+  <!-- Folder Browser Modal -->
+  <div id="folderBrowserModal" class="modal-overlay hidden">
+    <div class="modal-card folder-browser-card">
+      <div class="modal-header">
+        <h3>📁 Select Workspace Folder</h3>
+        <button id="closeFolderModal" class="icon-btn">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="driveBar" class="drive-bar"></div>
+        <div class="folder-nav-bar">
+          <button id="folderNavUp" class="sm-btn secondary">⬆ Up</button>
+          <div id="folderBreadcrumbs" class="folder-breadcrumbs"></div>
+        </div>
+        <div id="folderGrid" class="folder-grid"></div>
+      </div>
+      <div class="modal-footer">
+        <input id="selectedFolderPath" class="selected-folder-input" readonly>
+        <button id="confirmSelectFolder" class="primary">Select Workspace</button>
+        <button id="cancelSelectFolder" class="ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div id="modal" class="modal-backdrop hidden">
     <div class="modal-card">
       <h2 id="modalTitle">Pi extension request</h2>

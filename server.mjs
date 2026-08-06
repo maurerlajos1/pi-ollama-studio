@@ -18,7 +18,7 @@ import {
   unloadModel
 } from './src/ollama.mjs';
 import { inspectSession, listSessions } from './src/sessions.mjs';
-import { getGitStatus, getSystemStatus, gitCommit, gitDiff, gitStage, ManagedOllama, openNativeFolderPicker } from './src/system.mjs';
+import { browseDirectory, getGitStatus, getSystemStatus, gitCommit, gitDiff, gitStage, ManagedOllama, openNativeFolderPicker } from './src/system.mjs';
 import { isLoopbackHost } from './src/config.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -395,6 +395,10 @@ async function handleApi(req, res, url) {
     const body = (await readBody(req).catch(() => ({}))) || {};
     const result = await openNativeFolderPicker(body.current || '');
     json(res, 200, result);
+    return true;
+  }
+  if (req.method === 'GET' && pathname === '/api/workspace/browse') {
+    json(res, 200, await browseDirectory(searchParams.get('path')));
     return true;
   }
 

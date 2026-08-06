@@ -322,3 +322,41 @@ export async function openNativeFolderPicker(initialPath = '') {
 
   return { ok: false, error: `Unsupported platform: ${platform}` };
 }
+
+export async function browseDirectory(targetPath) {
+  const resolved = targetPath ? path.resolve(targetPath) : process.cwd();
+  try {
+    const entries = await fs.promises.readdir(resolved, { withFileTypes: true });
+    const folders = [];
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith('.')) {
+        folders.push({ name: entry.name, path: path.join(resolved, entry.name) });
+      }
+    }
+    folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+    const parent = path.dirname(resolved) !== resolved ? path.dirname(resolved) : null;
+    const drives = [];
+    if (process.platform === 'win32') {
+      for (const letter of ['C', 'D', 'E', 'F', 'G', 'H']) {
+        try {
+          const drivePath = `${letter}:\\`;
+          await fs.promises.access(drivePath);
+          drives.push({ name: `${letter}:`, path: drivePath });
+        } catch { /* ignore non-existent drive */ }
+      }
+    } else {
+      drives.push({ name: 'Root (/)', path: '/' }, { name: 'Home', path: os.homedir() });
+    }
+
+    return {
+      ok: true,
+      current: resolved,
+      parent,
+      drives,
+      folders
+    };
+  } catch (error) {
+    return { ok: false, error: error.message, current: resolved, parent: null, drives: [], folders: [] };
+  }
+}
