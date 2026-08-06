@@ -144,14 +144,15 @@ function getSelectedModelId() {
 // when the list changes (e.g. after a pull or profile create).
 function refreshModelSelectors() {
   const models = app.ollama.models || [];
+  const savedModel = localStorage.getItem('studio_selected_model') || '';
   for (const select of [$('#topModel'), $('#profileBaseModel')]) {
-    const current = select.value; select.innerHTML = '';
+    const current = select.value || savedModel; select.innerHTML = '';
     option(select, '', models.length ? 'Select model…' : 'No Ollama models');
     for (const model of models) option(select, model.model || model.name, model.model || model.name);
     if (select.id === 'topModel') option(select, '__custom__', 'Custom / Type model name…');
-    if ([...select.options].some((item) => item.value === current)) select.value = current;
+    if (current && [...select.options].some((item) => item.value === current)) select.value = current;
   }
-  const desired = app.pi.state?.model?.id || app.config.defaultModel || '';
+  const desired = app.pi.state?.model?.id || app.config.defaultModel || savedModel || '';
   if (desired && [...$('#topModel').options].some((item) => item.value === desired)) $('#topModel').value = desired;
   if (!$('#profileBaseModel').value && models[0]) $('#profileBaseModel').value = models[0].model || models[0].name;
   renderModelLibrary(); renderActiveModel();
@@ -1552,7 +1553,12 @@ async function refreshLiveStatus() {
   try {
     const value = await api('/api/status');
     app.pi = value.pi;
-    app.ollama = value.ollama;
+    if (value.ollama) {
+      if ((!value.ollama.models || !value.ollama.models.length) && app.ollama.models?.length && value.ollama.modelsAvailable === false) {
+        value.ollama.models = app.ollama.models;
+      }
+      app.ollama = value.ollama;
+    }
     app.system = value.system;
     renderPiSnapshot(); refreshModelSelectors(); renderSystem(); renderHealth();
   } catch (error) {
@@ -1634,6 +1640,7 @@ $('#topModel').onchange = () => {
   $('#customModelInput').classList.toggle('hidden', !isCustom);
   renderActiveModel();
   const selected = getSelectedModelId();
+  if (selected && !isCustom) localStorage.setItem('studio_selected_model', selected);
   if (app.pi.status?.running && selected && !isCustom) switchModel(selected);
 };
 $('#customModelInput').onchange = () => {

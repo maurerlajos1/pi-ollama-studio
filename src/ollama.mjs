@@ -81,6 +81,8 @@ export async function ollamaStream(apiPath, body, onEvent = null, timeoutMs = 24
   return events;
 }
 
+let lastKnownModels = [];
+
 export async function getOllamaStatus() {
   const [version, tags, ps] = await Promise.allSettled([
     ollamaJson('/api/version', { timeoutMs: 3500 }),
@@ -88,12 +90,15 @@ export async function getOllamaStatus() {
     ollamaJson('/api/ps', { timeoutMs: 5000 })
   ]);
   const online = version.status === 'fulfilled' || tags.status === 'fulfilled';
+  if (tags.status === 'fulfilled' && Array.isArray(tags.value?.models) && tags.value.models.length > 0) {
+    lastKnownModels = tags.value.models;
+  }
   return {
     online,
     modelsAvailable: tags.status === 'fulfilled',
     runningAvailable: ps.status === 'fulfilled',
     version: version.status === 'fulfilled' ? version.value.version : null,
-    models: tags.status === 'fulfilled' ? (tags.value.models || []) : [],
+    models: tags.status === 'fulfilled' ? (tags.value.models || []) : lastKnownModels,
     running: ps.status === 'fulfilled' ? (ps.value.models || []) : [],
     errors: [version, tags, ps].filter((item) => item.status === 'rejected').map((item) => item.reason?.message || String(item.reason))
   };
