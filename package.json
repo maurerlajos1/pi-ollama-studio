@@ -1,15 +1,26 @@
 {
   "name": "pi-ollama-studio",
-  "version": "1.1.2",
+  "version": "1.8.0-rc.4",
   "private": true,
   "type": "module",
-  "description": "Local Codex-style coding UI built on Pi RPC with Ollama model, context, KV-cache, GPU and session controls.",
+  "description": "Local-first Codex/Antigravity-style coding IDE built on Pi RPC with local/remote Ollama, vendored Monaco and xterm.js, real language servers, Git-backed session branching, Test Explorer, integrated terminals, diagnostics, rich diffs, and dual GUI/Vim interaction.",
   "scripts": {
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
-    "check": "node --check server.mjs && node --check src/config.mjs && node --check src/pi-rpc.mjs && node --check src/ollama.mjs && node --check src/sessions.mjs && node --check src/system.mjs && node --check public/app.js",
-    "test": "node --test",
-    "verify": "npm run check && npm test"
+    "check": "node --check server.mjs && node --check src/config.mjs && node --check src/harnesses.mjs && node --check src/process-tree.mjs && node --check src/pi-rpc.mjs && node --check src/ollama.mjs && node --check src/ollama-lifecycle.mjs && node --check src/sessions.mjs && node --check src/system.mjs && node --check src/checkpoints.mjs && node --check src/lsp.mjs && node --check src/terminal.mjs && node --check src/testing.mjs && node --check src/pi-platform.mjs && node --check src/providers.mjs && node --check src/routes/provider-routes.mjs && node --check src/routes/testing-routes.mjs && node --check src/routes/pi-platform-routes.mjs && node --check src/mcp.mjs && node --check src/routes/mcp-routes.mjs && node --check src/pi-packages.mjs && node --check src/preview.mjs && node --check src/routes/preview-routes.mjs && node --check src/routes/ollama-routes.mjs && node --check src/routes/tts-routes.mjs && node --check src/routes/package-routes.mjs && node --check public/provider-panel.js && node --check public/mcp-panel.js && node --check public/package-marketplace.js && node --check public/pi-platform-panel.js && node --check public/preview-panel.js && node --check public/command-system.js && node --check public/workbench.js && node --check public/app.js && node --check public/diagnostics.js && node --check public/monaco-adapter.js && node --check public/lsp-client.js && node --check scripts/static-preview.mjs && node --check scripts/test-ui-e2e.mjs && node --check scripts/test-ollama-e2e.mjs && node --check scripts/setup-node-pty.mjs",
+    "test": "node --test test/*.test.mjs",
+    "verify": "npm run check && npm test",
+    "test:hardware": "node --test scratch/test-thinking.mjs",
+    "test:pi-live": "node scripts/test-real-pi.mjs",
+    "test:lsp-live": "node --test test/lsp-live.test.mjs",
+    "test:ui": "node scripts/test-ui-e2e.mjs",
+    "verify:release": "npm run verify && npm run test:ui",
+    "test:ollama-e2e": "node scripts/test-ollama-e2e.mjs",
+    "verify:full": "npm run verify:release && npm run test:ollama-e2e",
+    "test:ollama-e2e:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-ollama-e2e-windows.ps1",
+    "setup:pty": "node scripts/setup-node-pty.mjs",
+    "verify:v1.8:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verify-v1.8-windows.ps1",
+    "verify:rc": "npm run check && npm test && npm run test:lsp-live && npm run test:pi-live"
   },
   "engines": {
     "node": ">=22.19.0"

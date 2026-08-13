@@ -1,0 +1,393 @@
+[
+  {
+    "label": "boot",
+    "at": "2026-08-09T03:50:06.022Z",
+    "pi": {
+      "running": false,
+      "workspace": "",
+      "model": "",
+      "status": {
+        "running": false,
+        "workspace": null,
+        "sessionDir": null,
+        "modelId": null,
+        "harnessId": null,
+        "tools": null,
+        "startedAt": null,
+        "pid": null,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58069",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "ollama-runtime-b-active",
+    "at": "2026-08-09T03:50:06.833Z",
+    "pi": {
+      "running": false,
+      "workspace": "",
+      "model": "",
+      "status": {
+        "running": false,
+        "workspace": null,
+        "sessionDir": null,
+        "modelId": null,
+        "harnessId": null,
+        "tools": null,
+        "startedAt": null,
+        "pid": null,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58070",
+      "running": [
+        {
+          "name": "runtime-b-coder:latest",
+          "sizeVram": 98765432,
+          "context": 65536
+        }
+      ]
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "remote-model-library-lifecycle",
+    "at": "2026-08-09T03:50:07.590Z",
+    "pi": {
+      "running": false,
+      "workspace": "",
+      "model": "",
+      "status": {
+        "running": false,
+        "workspace": null,
+        "sessionDir": null,
+        "modelId": null,
+        "harnessId": null,
+        "tools": null,
+        "startedAt": null,
+        "pid": null,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58070",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "new-project-created",
+    "at": "2026-08-09T03:50:08.460Z",
+    "pi": {
+      "running": false,
+      "workspace": "",
+      "model": "",
+      "status": {
+        "running": false,
+        "workspace": null,
+        "sessionDir": null,
+        "modelId": null,
+        "harnessId": null,
+        "tools": null,
+        "startedAt": null,
+        "pid": null,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58070",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "plain-html-static-preview",
+    "at": "2026-08-09T03:50:08.951Z",
+    "pi": {
+      "running": false,
+      "workspace": "",
+      "model": "",
+      "status": {
+        "running": false,
+        "workspace": null,
+        "sessionDir": null,
+        "modelId": null,
+        "harnessId": null,
+        "tools": null,
+        "startedAt": null,
+        "pid": null,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58070",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "recent-project-round-trip",
+    "at": "2026-08-09T03:50:14.454Z",
+    "pi": {
+      "running": false,
+      "workspace": "",
+      "model": "",
+      "status": {
+        "running": false,
+        "workspace": null,
+        "sessionDir": null,
+        "modelId": null,
+        "harnessId": null,
+        "tools": null,
+        "startedAt": null,
+        "pid": null,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58070",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "preview-running",
+    "at": "2026-08-09T03:50:19.766Z",
+    "pi": {
+      "running": false,
+      "workspace": "",
+      "model": "",
+      "status": {
+        "running": false,
+        "workspace": null,
+        "sessionDir": null,
+        "modelId": null,
+        "harnessId": null,
+        "tools": null,
+        "startedAt": null,
+        "pid": null,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58070",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "live-model-and-active-harness-restart",
+    "at": "2026-08-09T03:50:28.064Z",
+    "pi": {
+      "running": true,
+      "workspace": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace",
+      "model": "runtime-b-coder:latest",
+      "status": {
+        "running": true,
+        "workspace": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace",
+        "sessionDir": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace\\.pi\\studio-sessions",
+        "modelId": "runtime-b-coder:latest",
+        "harnessId": "ui-minimal-coder",
+        "tools": [
+          "read",
+          "edit",
+          "bash",
+          "tts_speak"
+        ],
+        "startedAt": "2026-08-09T03:50:27.290Z",
+        "pid": 24104,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58070",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "tts-lifecycle-and-assistant-speak",
+    "at": "2026-08-09T03:50:32.560Z",
+    "pi": {
+      "running": true,
+      "workspace": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace",
+      "model": "runtime-b-coder:latest",
+      "status": {
+        "running": true,
+        "workspace": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace",
+        "sessionDir": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace\\.pi\\studio-sessions",
+        "modelId": "runtime-b-coder:latest",
+        "harnessId": "ui-minimal-coder",
+        "tools": [
+          "read",
+          "edit",
+          "bash",
+          "tts_speak"
+        ],
+        "startedAt": "2026-08-09T03:50:27.290Z",
+        "pid": 24104,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58070",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "pi-chat-and-session-controls",
+    "at": "2026-08-09T03:50:32.685Z",
+    "pi": {
+      "running": true,
+      "workspace": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace",
+      "model": "runtime-b-coder:latest",
+      "status": {
+        "running": true,
+        "workspace": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace",
+        "sessionDir": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace\\.pi\\studio-sessions",
+        "modelId": "runtime-b-coder:latest",
+        "harnessId": "ui-minimal-coder",
+        "tools": [
+          "read",
+          "edit",
+          "bash",
+          "tts_speak"
+        ],
+        "startedAt": "2026-08-09T03:50:27.290Z",
+        "pid": 24104,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58070",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "pi-restarted-with-resources",
+    "at": "2026-08-09T03:50:35.204Z",
+    "pi": {
+      "running": true,
+      "workspace": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace",
+      "model": "runtime-b-coder:latest",
+      "status": {
+        "running": true,
+        "workspace": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace",
+        "sessionDir": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace\\.pi\\studio-sessions",
+        "modelId": "runtime-b-coder:latest",
+        "harnessId": "ui-minimal-coder",
+        "tools": [
+          "read",
+          "edit",
+          "bash",
+          "tts_speak"
+        ],
+        "startedAt": "2026-08-09T03:50:34.530Z",
+        "pid": 13972,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58070",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "session-tree",
+    "at": "2026-08-09T03:50:35.409Z",
+    "pi": {
+      "running": true,
+      "workspace": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace",
+      "model": "runtime-b-coder:latest",
+      "status": {
+        "running": true,
+        "workspace": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace",
+        "sessionDir": "H:\\temp\\pi-studio-ui-e2e-cCWbjV\\workspace\\.pi\\studio-sessions",
+        "modelId": "runtime-b-coder:latest",
+        "harnessId": "ui-minimal-coder",
+        "tools": [
+          "read",
+          "edit",
+          "bash",
+          "tts_speak"
+        ],
+        "startedAt": "2026-08-09T03:50:34.530Z",
+        "pid": 13972,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:58070",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  }
+]

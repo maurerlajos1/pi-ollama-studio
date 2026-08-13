@@ -1,0 +1,212 @@
+[
+  {
+    "label": "boot",
+    "at": "2026-08-08T18:49:07.836Z",
+    "pi": {
+      "running": false,
+      "workspace": "",
+      "model": "",
+      "status": {
+        "running": false,
+        "workspace": null,
+        "sessionDir": null,
+        "modelId": null,
+        "harnessId": null,
+        "tools": null,
+        "startedAt": null,
+        "pid": null,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:60555",
+      "running": []
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "ollama-runtime-b-active",
+    "at": "2026-08-08T18:49:09.387Z",
+    "pi": {
+      "running": false,
+      "workspace": "",
+      "model": "",
+      "status": {
+        "running": false,
+        "workspace": null,
+        "sessionDir": null,
+        "modelId": null,
+        "harnessId": null,
+        "tools": null,
+        "startedAt": null,
+        "pid": null,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:60556",
+      "running": [
+        {
+          "name": "runtime-b-coder:latest",
+          "sizeVram": 98765432,
+          "context": 65536
+        }
+      ]
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "new-project-created",
+    "at": "2026-08-08T18:49:10.265Z",
+    "pi": {
+      "running": false,
+      "workspace": "",
+      "model": "",
+      "status": {
+        "running": false,
+        "workspace": null,
+        "sessionDir": null,
+        "modelId": null,
+        "harnessId": null,
+        "tools": null,
+        "startedAt": null,
+        "pid": null,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:60556",
+      "running": [
+        {
+          "name": "runtime-b-coder:latest",
+          "sizeVram": 98765432,
+          "context": 65536
+        }
+      ]
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "preview-running",
+    "at": "2026-08-08T18:49:21.210Z",
+    "pi": {
+      "running": false,
+      "workspace": "",
+      "model": "",
+      "status": {
+        "running": false,
+        "workspace": null,
+        "sessionDir": null,
+        "modelId": null,
+        "harnessId": null,
+        "tools": null,
+        "startedAt": null,
+        "pid": null,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:60556",
+      "running": [
+        {
+          "name": "runtime-b-coder:latest",
+          "sizeVram": 98765432,
+          "context": 65536
+        }
+      ]
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "pi-restarted-with-resources",
+    "at": "2026-08-08T18:49:27.065Z",
+    "pi": {
+      "running": true,
+      "workspace": "H:\\temp\\pi-studio-ui-e2e-8cBBYd\\workspace",
+      "model": "fake-model",
+      "status": {
+        "running": true,
+        "workspace": "H:\\temp\\pi-studio-ui-e2e-8cBBYd\\workspace",
+        "sessionDir": "H:\\temp\\pi-studio-ui-e2e-8cBBYd\\workspace\\.pi\\studio-sessions",
+        "modelId": "fake-model",
+        "harnessId": "coding-default",
+        "tools": null,
+        "startedAt": "2026-08-08T18:49:26.707Z",
+        "pid": 24784,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:60556",
+      "running": [
+        {
+          "name": "runtime-b-coder:latest",
+          "sizeVram": 98765432,
+          "context": 65536
+        }
+      ]
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  },
+  {
+    "label": "session-tree",
+    "at": "2026-08-08T18:49:27.396Z",
+    "pi": {
+      "running": true,
+      "workspace": "H:\\temp\\pi-studio-ui-e2e-8cBBYd\\workspace",
+      "model": "fake-model",
+      "status": {
+        "running": true,
+        "workspace": "H:\\temp\\pi-studio-ui-e2e-8cBBYd\\workspace",
+        "sessionDir": "H:\\temp\\pi-studio-ui-e2e-8cBBYd\\workspace\\.pi\\studio-sessions",
+        "modelId": "fake-model",
+        "harnessId": "coding-default",
+        "tools": null,
+        "startedAt": "2026-08-08T18:49:26.707Z",
+        "pid": 24784,
+        "lastError": null
+      }
+    },
+    "ollama": {
+      "online": true,
+      "baseUrl": "http://127.0.0.1:60556",
+      "running": [
+        {
+          "name": "runtime-b-coder:latest",
+          "sizeVram": 98765432,
+          "context": 65536
+        }
+      ]
+    },
+    "managedOllama": {
+      "running": false,
+      "pid": null,
+      "logs": []
+    }
+  }
+]

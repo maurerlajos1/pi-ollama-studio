@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Pi Ollama Studio</title>
+  <link rel="stylesheet" href="/vendor/xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -22,9 +23,12 @@
           <!-- Model pill: shows short name · quant · VRAM when a model is loaded -->
           <div id="modelPill"></div>
         </label>
+        <label class="compact-field harness-field"><span>Harness</span><select id="topHarness" title="Agent/coding harness used for new Pi sessions"></select></label>
         <label class="compact-field"><span>Thinking</span><select id="thinkingLevel"><option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
-        <button id="startPi" class="primary">Start Pi</button>
+        <button id="startPi" class="primary">Start Session</button>
         <button id="stopPi" class="danger ghost">Stop</button>
+        <button id="restartPi" class="ghost" title="Restart Pi while preserving the current session">Restart Pi</button>
+        <button id="openCommandPalette" class="ghost command-palette-trigger" title="Command Palette (Ctrl/Cmd+Shift+P)" aria-label="Open command palette">⌘</button>
       </div>
       <div class="health-strip">
         <span id="piHealth" class="health"><i></i> Pi</span>
@@ -35,23 +39,33 @@
         <span id="gpuVramBadge" title="GPU VRAM usage">GPU —</span>
         <!-- Live Active Context Token Gauge -->
         <span id="contextGaugeBadge" class="health" title="Active Context Tokens vs Model Limit">Context —</span>
+        <span id="harnessHealth" class="health" title="Effective harness for the active/new session">Harness —</span>
+        <button id="interactionModeBadge" class="interaction-mode-badge" title="Interaction mode">Standard</button>
       </div>
     </header>
 
+    <div id="piRestartNotice" class="pi-restart-notice hidden" role="status" aria-live="polite">
+      <div><strong>Pi resources changed</strong><span id="piRestartNoticeText">Restart Pi to load the latest extensions, skills, prompts, or package filters.</span></div>
+      <button id="restartPiResources" class="primary sm-btn">Restart Pi</button>
+    </div>
+
     <aside class="left-panel panel">
       <section class="panel-section workspace-section">
-        <div class="section-title"><span>Workspace</span><button id="refreshWorkspace" class="icon-btn" title="Refresh">↻</button></div>
-        <div class="workspace-row"><input id="workspacePath" placeholder="C:\\projects\\app or /home/me/app"><input type="file" id="nativeFolderInput" webkitdirectory directory style="display:none"><button id="selectFolder" class="icon-btn" title="Browse / Select Folder Dialog (Windows & Linux)">📁</button><button id="applyWorkspace">Open</button></div>
+        <div class="section-title"><span>Project</span><div><button id="newProject" class="icon-btn" title="New Project" aria-label="New project">＋</button><button id="openProjectManager" class="icon-btn" title="Projects / Recent" aria-label="Open projects and recent workspaces">⌄</button><button id="refreshWorkspace" class="icon-btn" title="Refresh" aria-label="Refresh current project">↻</button></div></div>
+        <div id="currentProjectLabel" class="current-project-label"><strong>No project</strong><span class="muted">Open or create a workspace</span></div>
+        <div class="workspace-row"><input id="workspacePath" placeholder="C:\\projects\\app or /home/me/app"><input type="file" id="nativeFolderInput" webkitdirectory directory style="display:none"><button id="selectFolder" class="icon-btn" title="Browse / Select Folder Dialog (Windows & Linux)" aria-label="Browse for project folder">📁</button><button id="applyWorkspace">Open</button></div>
         <div id="gitSummary" class="git-summary muted">No workspace selected</div>
       </section>
 
       <section class="panel-section sessions-section">
-        <div class="section-title"><span>Sessions</span><div><button id="newSession" class="icon-btn" title="New session">＋</button><button id="refreshSessions" class="icon-btn" title="Refresh">↻</button></div></div>
+        <div class="section-title"><span>Sessions</span><div><button id="newSession" class="icon-btn" title="New session" aria-label="New Pi session">＋</button><button id="refreshSessions" class="icon-btn" title="Refresh" aria-label="Refresh sessions">↻</button></div></div>
         <div id="sessionList" class="session-list empty-state">No sessions</div>
       </section>
 
       <section class="panel-section explorer-section">
-        <div class="section-title"><span>Explorer</span><button id="collapseExplorer" class="icon-btn">−</button></div>
+        <div class="section-title"><span>Explorer</span><button id="collapseExplorer" class="icon-btn" title="Collapse Explorer" aria-label="Collapse Explorer">−</button></div>
+        <div class="explorer-search-row"><input id="workspaceSearchInput" type="search" placeholder="Search files & text…"><button id="workspaceSearchBtn" class="icon-btn" title="Search workspace" aria-label="Search workspace">⌕</button></div>
+        <div id="workspaceSearchResults" class="workspace-search-results hidden"></div>
         <div id="fileTree" class="file-tree empty-state">Open a workspace</div>
       </section>
     </aside>
@@ -60,9 +74,13 @@
       <nav class="view-tabs">
         <button data-view="chat" class="active">Chat</button>
         <button data-view="editor">Editor <span id="editorDirty"></span></button>
+        <button data-view="preview">Preview</button>
         <button data-view="tree">Session Tree</button>
-        <button data-view="git">Git</button>
+        <button data-view="git">Changes</button>
+        <button data-view="problems">Problems <span id="problemCountBadge"></span></button>
+        <button data-view="resources">Resources</button>
         <button data-view="terminal">Terminal</button>
+        <button data-view="tests">Tests <span id="testStatusBadge"></span></button>
         <button data-view="logs">Logs</button>
         <button data-view="docs">Documentation</button>
       </nav>
@@ -86,14 +104,14 @@
           <textarea id="composer" rows="3" placeholder="Ask Pi to inspect, edit, test, or debug your project… (Press Enter to send, Shift+Enter for new line)"></textarea>
           <div class="composer-actions">
             <div>
-              <button id="attachImage" class="icon-btn" title="Attach image">▧</button>
+              <button id="attachImage" class="icon-btn" title="Attach image" aria-label="Attach image">▧</button>
               <input id="imageInput" type="file" accept="image/*" multiple hidden>
-              <button id="compactNow" class="text-btn">Compact</button>
-              <button id="abortAgent" class="text-btn danger-text">Abort</button>
+              <button id="compactNow" class="text-btn" disabled>Compact</button>
+              <button id="abortAgent" class="text-btn danger-text" disabled>Abort</button>
             </div>
             <div class="send-group">
-              <button id="sendSteer" class="text-btn" title="Inject corrective guidance into active turn">Steer Now</button>
-              <button id="sendFollowUp" class="text-btn" title="Queue message to run after current turn">Follow Up</button>
+              <button id="sendSteer" class="text-btn" title="Inject corrective guidance into active turn" disabled>Steer Now</button>
+              <button id="sendFollowUp" class="text-btn" title="Queue message to run after current turn" disabled>Follow Up</button>
               <button id="sendPrompt" class="primary" title="Send message (Press Enter)">Send <kbd>↵</kbd></button>
             </div>
           </div>
@@ -101,12 +119,61 @@
         <div id="extensionWidgetsBelow" class="extension-widgets hidden" aria-live="polite"></div>
       </section>
 
-      <section id="view-editor" class="view editor-view">
-        <div class="editor-toolbar">
-          <div><span id="editorPath" class="editor-path">No file open</span><span id="editorMeta" class="muted"></span></div>
-          <div><button id="reloadFile">Reload</button><button id="saveFile" class="primary">Save</button></div>
+      <section id="view-preview" class="view preview-view">
+        <div class="preview-toolbar">
+          <input id="previewCommand" placeholder="npm run dev -- --host 127.0.0.1" aria-label="Preview dev-server command">
+          <input id="previewUrl" placeholder="http://127.0.0.1:5173" aria-label="Preview URL">
+          <button id="previewSave">Save</button><button id="previewStart" class="primary">Start</button><button id="previewRestart">Restart</button><button id="previewStop">Stop</button><button id="previewRefresh">Refresh</button><button id="previewOpenExternal">Open ↗</button>
         </div>
-        <textarea id="codeEditor" spellcheck="false" placeholder="Choose a text file from Explorer"></textarea>
+        <div class="preview-meta"><span id="previewStatus">stopped</span><span class="muted">Workspace-scoped preview; localhost URLs only.</span></div>
+        <div class="preview-stage"><iframe id="previewFrame" title="Application preview" sandbox="allow-forms allow-modals allow-pointer-lock allow-popups allow-same-origin allow-scripts"></iframe></div>
+        <details class="preview-log-wrap"><summary>Preview server logs</summary><pre id="previewLogs" class="rpc-result">No preview logs yet.</pre></details>
+      </section>
+
+      <section id="view-editor" class="view editor-view">
+        <div class="workbench-header">
+          <div id="bufferTabs" class="buffer-tabs" role="tablist" aria-label="Open files"></div>
+          <div class="workbench-actions">
+            <span id="lspStatus" class="lsp-status" title="Language server status">LSP idle</span>
+            <button id="restartLsp" class="icon-btn" title="Restart language servers">↻ LSP</button>
+            <button id="prevBuffer" class="icon-btn" title="Previous buffer" aria-label="Previous editor buffer">←</button>
+            <button id="nextBuffer" class="icon-btn" title="Next buffer" aria-label="Next editor buffer">→</button>
+            <button id="splitVertical" class="icon-btn" title="Split vertically" aria-label="Split editor vertically">◫</button>
+            <button id="splitHorizontal" class="icon-btn" title="Split horizontally" aria-label="Split editor horizontally">⬒</button>
+            <button id="closeSplit" class="icon-btn" title="Close split" aria-label="Close editor split">⊟</button>
+            <button id="togglePreviewSplit" class="icon-btn" title="Toggle App Preview beside the editor">▣ Preview</button>
+            <button id="editorFind" class="icon-btn" title="Find (Ctrl/Cmd+F)" aria-label="Find in current file">⌕</button>
+            <button id="editorReplace" class="icon-btn" title="Replace (Ctrl/Cmd+H)" aria-label="Replace in current file">⇄</button>
+            <button id="reloadFile">Reload</button>
+            <button id="saveAllFiles">Save All</button>
+            <button id="saveFile" class="primary">Save</button>
+          </div>
+        </div>
+        <div id="editorPreviewLayout" class="editor-preview-layout">
+        <div id="editorWorkbench" class="editor-workbench split-none">
+          <section id="editorPanePrimary" class="editor-pane active-pane" data-pane="primary">
+            <div class="editor-toolbar">
+              <div><span id="editorPath" class="editor-path">No file open</span><span id="editorMeta" class="muted"></span></div>
+              <span class="pane-label">Primary</span>
+            </div>
+            <div id="monacoEditorPrimary" class="monaco-editor-host hidden" aria-label="Primary code editor"></div>
+            <textarea id="codeEditor" class="fallback-code-editor" spellcheck="false" placeholder="Choose a text file from Explorer"></textarea>
+          </section>
+          <div id="editorSplitDivider" class="editor-split-divider hidden" aria-hidden="true"></div>
+          <section id="editorPaneSecondary" class="editor-pane secondary-pane hidden" data-pane="secondary">
+            <div class="editor-toolbar">
+              <div><span id="editorPathSecondary" class="editor-path">No file open</span><span id="editorMetaSecondary" class="muted"></span></div>
+              <span class="pane-label">Secondary</span>
+            </div>
+            <div id="monacoEditorSecondary" class="monaco-editor-host hidden" aria-label="Secondary code editor"></div>
+            <textarea id="codeEditorSecondary" class="fallback-code-editor" spellcheck="false" placeholder="Open a file in this split"></textarea>
+          </section>
+        </div>
+        <aside id="editorPreviewPane" class="editor-preview-pane hidden">
+          <div class="editor-preview-toolbar"><strong>App Preview</strong><span id="editorPreviewStatus" class="muted">stopped</span><button id="editorPreviewRefresh" class="sm-btn">Refresh</button><button id="editorPreviewClose" class="sm-btn">Close</button></div>
+          <iframe id="editorPreviewFrame" title="Application preview beside editor" sandbox="allow-forms allow-modals allow-pointer-lock allow-popups allow-same-origin allow-scripts"></iframe>
+        </aside>
+        </div>
       </section>
 
       <section id="view-tree" class="view tree-view">
@@ -140,32 +207,118 @@
         <div id="sessionTree" class="tree-content empty-state">Start Pi to inspect the session tree.</div>
       </section>
 
-      <!-- ── Dedicated Terminal View & Session Manager ────────────────────── -->
-      <section id="view-terminal" class="view terminal-view">
+      <section id="view-problems" class="view problems-view">
         <div class="sub-toolbar">
+          <div><strong>Quickfix / Problems</strong> <span class="muted">Editor diagnostics, tests/build output, agent and tool failures</span></div>
+          <div class="problems-toolbar-actions"><select id="problemSeverityFilter"><option value="all">All severities</option><option value="error">Errors</option><option value="warning">Warnings</option><option value="info">Info</option></select><button id="prevProblem" class="sm-btn">[q Previous</button><button id="nextProblem" class="sm-btn">]q Next</button><button id="clearProblems" class="sm-btn danger ghost">Clear</button></div>
+        </div>
+        <details class="lsp-details"><summary>Language Servers</summary><div id="lspServerList" class="lsp-server-list empty-state">Open a workspace to inspect language servers.</div></details>
+        <div id="problemsList" class="problems-list empty-state">No problems recorded.</div>
+      </section>
+
+      <section id="view-resources" class="view resources-view">
+        <div class="sub-toolbar resources-toolbar">
           <div>
-            <button id="launchDesktopTerminal" class="primary sm-btn">＋ New Terminal Window</button>
-            <button id="attachPiTerminal" class="secondary sm-btn">⚡ Attach to Active Pi Session</button>
+            <strong>Pi Platform</strong>
+            <span class="muted">Inspect and manage Pi commands, instructions, skills, prompts, packages and scoped settings</span>
           </div>
-          <div>
-            <button id="refreshTerminalSessions" class="sm-btn">↻ Refresh Sessions</button>
+          <div class="resource-toolbar-actions">
+            <input id="resourceSearch" type="search" placeholder="Search current resource view…">
+            <button id="refreshResources" class="sm-btn primary">↻ Refresh</button>
           </div>
         </div>
-
-        <div class="terminal-content-grid">
-          <div class="terminal-section-box">
-            <div class="settings-section-header">Active Terminal Sessions & CLI Processes</div>
-            <div id="terminalSessionsList" class="terminal-sessions-list empty-state">No active terminal sessions found. Click "+ New Terminal Window" to launch one.</div>
-          </div>
-
-          <div class="terminal-section-box console-box">
-            <div class="settings-section-header">Interactive Web Shell Console</div>
-            <div class="web-console-input-row">
-              <input id="webConsoleInput" placeholder="Type bash / shell command (e.g. dir, git status, npm test)…">
-              <button id="runWebConsole" class="primary sm-btn">Execute</button>
+        <div class="platform-tab-bar" id="platformTabBar">
+          <button data-platform-tab="overview" class="active">Overview</button>
+          <button data-platform-tab="commands">Commands</button>
+          <button data-platform-tab="instructions">Instructions</button>
+          <button data-platform-tab="skills">Skills</button>
+          <button data-platform-tab="prompts">Prompts</button>
+          <button data-platform-tab="extensions">Extensions</button>
+          <button data-platform-tab="packages">Packages</button>
+          <button data-platform-tab="settings">Settings</button>
+        </div>
+        <div id="platformOverview" class="platform-overview"></div>
+        <div id="platformWorkspace" class="platform-workspace hidden">
+          <aside class="platform-list-pane">
+            <div id="platformListActions" class="platform-list-actions"></div>
+            <div id="platformList" class="platform-list empty-state">Open a workspace to inspect Pi resources.</div>
+          </aside>
+          <section class="platform-detail-pane">
+            <div class="platform-detail-header">
+              <div><strong id="platformDetailTitle">Select a resource</strong><span id="platformDetailMeta" class="muted"></span></div>
+              <div id="platformDetailActions" class="button-row compact-actions"></div>
             </div>
-            <pre id="webConsoleOutput" class="web-console-output">Web Console ready. Enter a command above to execute directly in the workspace.</pre>
+            <textarea id="platformEditor" class="platform-editor" spellcheck="false" placeholder="Select a resource to inspect it"></textarea>
+            <pre id="platformSettingsEffective" class="platform-effective hidden"></pre>
+            <div id="platformDetailNote" class="platform-detail-note muted"></div>
+          </section>
+        </div>
+        <div id="commandResourcePanel" class="hidden">
+          <div class="resource-filter-bar" id="resourceFilterBar">
+            <button data-resource-filter="all" class="active">All</button>
+            <button data-resource-filter="skill">Skills</button>
+            <button data-resource-filter="prompt">Prompts</button>
+            <button data-resource-filter="extension">Extensions</button>
+            <button data-resource-filter="builtin">Built-ins</button>
           </div>
+          <div id="resourceSummary" class="resource-summary muted">Start Pi, then refresh to discover commands.</div>
+          <div id="resourceList" class="resource-list empty-state">No Pi commands loaded.</div>
+        </div>
+      </section>
+
+      <!-- ── Integrated xterm Terminal ─────────────────────────────────────── -->
+      <section id="view-terminal" class="view terminal-view">
+        <div class="sub-toolbar terminal-toolbar">
+          <div class="button-row compact-actions">
+            <button id="newIntegratedTerminal" class="primary sm-btn">＋ New Terminal</button>
+            <button id="splitTerminal" class="secondary sm-btn" disabled>Split</button>
+            <button id="closeTerminalSplit" class="secondary ghost sm-btn" disabled>Close Split</button>
+            <button id="killIntegratedTerminal" class="danger ghost sm-btn" disabled>Kill</button>
+            <button id="launchDesktopTerminal" class="sm-btn">Open Native Window</button>
+          </div>
+          <div class="terminal-toolbar-right">
+            <input id="terminalSearchInput" type="search" placeholder="Search terminal…" disabled>
+            <button id="terminalSearchPrev" class="sm-btn" aria-label="Previous terminal search result" disabled>↑</button>
+            <button id="terminalSearchNext" class="sm-btn" aria-label="Next terminal search result" disabled>↓</button>
+            <button id="refreshTerminalSessions" class="sm-btn" aria-label="Refresh terminal sessions">↻</button>
+          </div>
+        </div>
+        <div id="terminalTabs" class="terminal-tabs"></div>
+        <div id="terminalWorkspace" class="integrated-terminal-workspace split-none">
+          <section class="integrated-terminal-pane active" data-terminal-pane="primary"><div id="xtermPrimary" class="xterm-host"></div></section>
+          <div id="terminalSplitDivider" class="terminal-split-divider hidden"></div>
+          <section class="integrated-terminal-pane hidden" data-terminal-pane="secondary"><div id="xtermSecondary" class="xterm-host"></div></section>
+        </div>
+        <div class="terminal-footer-bar">
+          <span id="terminalBackendStatus">Terminal backend: detecting…</span>
+          <span id="terminalActiveInfo" class="muted">No integrated terminal</span>
+        </div>
+        <details class="terminal-process-details">
+          <summary>Processes & legacy console</summary>
+          <div class="terminal-content-grid">
+            <div class="terminal-section-box"><div class="settings-section-header">Active terminal / Pi processes</div><div id="terminalSessionsList" class="terminal-sessions-list empty-state">No active sessions.</div></div>
+            <div class="terminal-section-box console-box"><div class="settings-section-header">Pi Bash Console</div><div class="web-console-input-row"><input id="webConsoleInput" placeholder="Run command through active Pi…" disabled><button id="runWebConsole" class="primary sm-btn" disabled>Execute</button></div><pre id="webConsoleOutput" class="web-console-output">Pi Bash Console ready.</pre></div>
+          </div>
+        </details>
+      </section>
+
+      <!-- ── Test Explorer / Run Configurations ───────────────────────────── -->
+      <section id="view-tests" class="view tests-view">
+        <div class="sub-toolbar tests-toolbar">
+          <div class="button-row compact-actions"><button id="runAllTests" class="primary sm-btn" disabled>▶ Run All</button><button id="rerunTests" class="sm-btn" disabled>↻ Rerun</button><button id="refreshTests" class="sm-btn">Discover</button></div>
+          <div><span id="testsSummary" class="muted">Open a workspace to discover tests</span></div>
+        </div>
+        <div class="tests-layout">
+          <aside class="test-explorer-panel">
+            <div class="tests-panel-heading">Test Explorer</div>
+            <div id="testExplorerList" class="test-explorer-list empty-state">No tests discovered.</div>
+            <div class="tests-panel-heading">Run Configurations</div>
+            <div id="runConfigurationsList" class="run-config-list empty-state">No run configurations.</div>
+          </aside>
+          <section class="test-output-panel">
+            <div class="test-output-header"><strong id="testOutputTitle">Test output</strong><div><button id="testAskPi" class="sm-btn" disabled>Ask Pi to Fix</button><button id="testOpenTerminal" class="sm-btn">Open Terminal</button></div></div>
+            <pre id="testOutput" class="test-output">Run a test to see output.</pre>
+          </section>
         </div>
       </section>
 
@@ -193,7 +346,8 @@
           </div>
           <!-- Right: Diff viewer -->
           <div class="git-diff-panel">
-            <div class="git-diff-header">Diff</div>
+            <div class="git-diff-header"><span id="gitDiffTitle">Diff</span><div class="git-diff-actions"><button id="gitOpenFile" class="sm-btn">Open</button><button id="gitToggleStage" class="sm-btn primary">Stage</button><button id="gitCopyPatch" class="sm-btn">Copy Patch</button><button id="gitDiffPrevious" class="sm-btn" title="Previous change" aria-label="Previous diff change">↑</button><button id="gitDiffNext" class="sm-btn" title="Next change" aria-label="Next diff change">↓</button><button id="gitDiffMode" class="sm-btn">Inline</button><button id="gitAskAgent" class="sm-btn">Ask Agent</button><button id="gitRestoreFile" class="sm-btn danger ghost">Restore File</button></div></div>
+            <div id="gitMonacoDiff" class="git-monaco-diff hidden"></div>
             <div id="gitDiffContent" class="git-diff-content empty-state">Select a file to see its diff</div>
           </div>
         </div>
@@ -223,7 +377,10 @@
             <button data-doc-link="docs-context">Context and KV cache</button>
             <button data-doc-link="docs-tokens">Token monitoring</button>
             <button data-doc-link="docs-sessions">Sessions and compaction</button>
+            <button data-doc-link="docs-projects">Projects and workspaces</button>
             <button data-doc-link="docs-runtime">Ollama runtime</button>
+            <button data-doc-link="docs-preview">App Preview</button>
+            <button data-doc-link="docs-harnesses">Harnesses</button>
             <button data-doc-link="docs-tools">Tools and commands</button>
             <button data-doc-link="docs-safety">Workspace safety</button>
             <button data-doc-link="docs-troubleshooting">Troubleshooting</button>
@@ -279,7 +436,7 @@
 
             <article id="docs-models" class="doc-card" data-doc-search>
               <h2>Ollama models and profiles</h2>
-              <p>The model selector lists models installed in your local Ollama instance. Pulling a model downloads it; unloading releases its active runtime allocation; deleting removes its local files.</p>
+              <p>The model selector lists models installed on the active Ollama runtime. That can be local, LAN, VPN, or HTTPS. Pulling a model downloads it to that active server; unloading releases its active runtime allocation; deleting removes it from that server.</p>
               <h3>Profile settings</h3>
               <dl>
                 <dt>Base model</dt><dd>The original Ollama model from which a named profile is created.</dd>
@@ -335,8 +492,31 @@
               </dl>
             </article>
 
-            <article id="docs-runtime" class="doc-card" data-doc-search>
+            <article id="docs-projects" class="doc-card" data-doc-search>
+              <h2>Projects and workspaces</h2>
+              <p>Use <strong>Project Manager</strong> to open an existing folder, create a project, switch to a recent project, or continue from a historical session point. The active project path is the source of truth for the editor, Git, LSP, tests, terminals, Preview, Pi sessions, and project-scoped resources.</p>
+              <h3>New project</h3>
+              <ol>
+                <li>Choose <strong>New Project</strong> and enter a project name.</li>
+                <li>Choose the <em>parent</em> folder. Studio creates the final <code>parent\project-name</code> directory for you.</li>
+                <li>Select Empty, Plain HTML, or Node.js and choose <strong>Create and Open</strong>.</li>
+              </ol>
+              <h3>Create from session</h3>
+              <p>From Session Tree, choose <strong>Create App from Here</strong> on a prompt. Studio uses the associated Git checkpoint when available, forks the Pi session, creates an isolated project, and opens it. The original workspace remains unchanged.</p>
+              <div class="doc-callout"><strong>Workspace switch rule:</strong> after switching from A to B, old A files, tests, diagnostics, terminals, Preview processes, Pi events, and cached project resources must not repaint the B workspace.</div>
+            </article>
+
+            <article id="docs-runtime" class="doc-card" data-doc-search data-doc-keywords="runtime switch active server endpoint test connection local LAN remote GPU VRAM model loading">
               <h2>Ollama server runtime</h2>
+              <p><strong>Test Connection</strong> only checks the address currently in the form. Choose <strong>Use this server</strong> to make it the active Studio runtime. Once used, installed models come from that server's <code>/api/tags</code>, loaded GPU models come from its <code>/api/ps</code>, and the Model Library's Pull action downloads directly to that server.</p>
+              <h3>Four model states</h3>
+              <ul>
+                <li><strong>Installed:</strong> available on the active Ollama server.</li>
+                <li><strong>Loaded:</strong> currently resident according to that server's <code>/api/ps</code>.</li>
+                <li><strong>Selected:</strong> the model/profile Studio intends to use next.</li>
+                <li><strong>Session model:</strong> the model bound to the running Pi session.</li>
+              </ul>
+              <p>Studio never silently replaces your selected model with whichever model happens to be loaded. A loaded model is shown as a warm-start hint; starting a session still uses the explicit selection.</p>
               <dl>
                 <dt>Base URL</dt><dd>Address of the Ollama HTTP API, normally <code>http://127.0.0.1:11434</code>.</dd>
                 <dt>Flash Attention</dt><dd>Enables Ollama’s optimized attention path where supported. It is normally desirable for long-context local inference.</dd>
@@ -349,6 +529,20 @@
               </dl>
             </article>
 
+            <article id="docs-preview" class="doc-card" data-doc-search>
+              <h2>App Preview</h2>
+              <p>Preview runs a workspace-local development server and displays its localhost page beside the editor. Use <strong>Start</strong>, <strong>Restart</strong>, <strong>Stop</strong>, and <strong>Refresh</strong> from the Preview toolbar, or use the command palette and keyboard commands.</p>
+              <h3>Supported project shapes</h3>
+              <ul>
+                <li>Package scripts such as <code>dev</code>, <code>preview</code>, or <code>start</code>.</li>
+                <li>Vite, Angular, and Django development servers.</li>
+                <li>Plain HTML/CSS/JS projects: an <code>index.html</code> workspace automatically gets Studio's built-in static server.</li>
+                <li>A manually entered command or existing localhost URL.</li>
+              </ul>
+              <p>Use the editor split command when you want code and the running application visible together. Preview is workspace-scoped; switching projects stops or detaches the old project's server so the editor cannot show project B beside app A.</p>
+              <div class="doc-callout"><strong>Local-only boundary:</strong> Preview is intended for local development URLs. It is not a public hosting service and does not replace the later browser-agent/visual-regression features.</div>
+            </article>
+
             <article id="docs-tools" class="doc-card" data-doc-search>
               <h2>Tools, shell commands, skills, and extensions</h2>
               <p>Pi owns the tool loop. Studio displays tool-call arguments, progress, results, and errors. Direct shell runs through Pi rather than an unrelated terminal process, so it stays associated with the current agent workspace.</p>
@@ -357,6 +551,20 @@
                 <dt>Raw Pi RPC</dt><dd>An advanced escape hatch for documented Pi RPC commands that do not yet have a dedicated visual control.</dd>
                 <dt>Extension dialogs</dt><dd>Pi extensions can request confirmation, selection, text, or editor input. Studio renders the standard RPC dialog types.</dd>
               </dl>
+            </article>
+
+            <article id="docs-harnesses" class="doc-card" data-doc-search>
+              <h2>Agent and coding harnesses</h2>
+              <p><strong>Harness</strong> means the environment and rules Pi runs with around the selected model. A coding harness is an agent harness specialized for repository work.</p>
+              <dl>
+                <dt>Workspace</dt><dd>The canonical project root. Git, LSP, tests, Preview, terminals, sessions, and project Pi resources are scoped to it.</dd>
+                <dt>Runtime</dt><dd>The active Ollama server or external provider. Testing another Ollama endpoint does not switch the active runtime until you choose <strong>Use this server</strong>.</dd>
+                <dt>Selected model</dt><dd>The model Studio intends to use. This is persisted independently from GPU residency.</dd>
+                <dt>Loaded model</dt><dd>Live Ollama <code>/api/ps</code> state. A loaded model can make startup faster, but Studio never silently chooses it for a new session.</dd>
+                <dt>Harness</dt><dd>Pi tool allowlist plus workflow guidance. Pi project/global skills, prompts, extensions, packages, and context files remain Pi-native resources.</dd>
+              </dl>
+              <p>The New Session launcher shows the full launch contract before starting. If the same Pi process already has the chosen model and harness, Studio can create a fresh session without an unnecessary process/model swap. Changing harness requires a Pi restart in the current RPC host because the tool allowlist is a launch-time contract.</p>
+              <p><strong>Coding · Pi Default + Web</strong> is a built-in launch preset for projects where an enabled Pi web-search/fetch extension is available. Install or enable it from <button class="link-button" data-doc-action="resources-extensions">Resources → Extensions</button>; when Pi is already running, Studio shows a restart notice and loads the changed resource set after you restart Pi.</p>
             </article>
 
             <article id="docs-safety" class="doc-card" data-doc-search>
@@ -388,10 +596,12 @@
 
       <footer class="statusbar">
         <span id="agentStatus">Idle</span>
+        <span id="workspaceStatus">No workspace</span>
+        <span id="bufferStatus">No buffer</span>
         <span id="sessionName">No session</span>
         <span id="tokenStatus">0 tokens</span>
         <span id="contextStatus">Context —</span>
-        <span id="toolStatus">0 tools</span>
+        <span id="toolStatus">0 tool calls</span>
         <span id="extensionStatus" class="extension-status"></span>
       </footer>
     </main>
@@ -400,7 +610,11 @@
       <nav class="settings-tabs">
         <button data-settings="model" class="active">Model</button>
         <button data-settings="runtime">Runtime</button>
+        <button data-settings="providers">Providers</button>
+        <button data-settings="mcp">MCP</button>
+        <button data-settings="harness">Harness</button>
         <button data-settings="session">Pi</button>
+        <button data-settings="interaction">Keys</button>
         <button data-settings="advanced">Advanced</button>
       </nav>
 
@@ -413,16 +627,23 @@
             <div><span>Total GPU VRAM</span><strong id="totalGpuVram">—</strong></div>
             <div><span>Runtime context</span><strong id="runtimeContext">—</strong></div>
             <div><span>Offload</span><strong id="offloadStatus">—</strong></div>
+            <div><span>Estimated KV cache</span><strong id="kvEstimate">—</strong></div>
           </div>
           <div id="vramMeter" class="vram-meter-wrap">
             <div class="vram-meter-header"><span>GPU Memory Usage</span><strong id="vramMeterText">0 / 24.0 GB (0%)</strong></div>
             <div class="vram-meter-bar"><div id="vramMeterFill" class="vram-meter-fill"></div></div>
           </div>
-          <div class="button-row"><button id="diagnoseModel">Analyze memory</button><button id="unloadModel">Unload</button></div>
+          <div class="button-row"><button id="diagnoseModel">Analyze memory</button><button id="unloadModel" disabled>Unload</button></div>
         </section>
 
         <section class="settings-section">
-          <h3>Create Ollama profile</h3>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+            <h3 style="margin:0;">Create / Edit Ollama profile</h3>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button id="applyPreset3090" class="sm-btn primary" title="Apply optimal settings for RTX 3090 24GB Coding">⚡ 3090 Coding Preset</button>
+              <button id="loadCurrentModelBtn" class="sm-btn secondary" title="Pre-fill form from the currently selected model">⬇ Load Model Info</button>
+            </div>
+          </div>
           <label>Base model<select id="profileBaseModel"></select></label>
           <label>Profile model name<input id="profileName" placeholder="qwen-code:64k"></label>
           <div class="two-col"><label>Context window<input id="profileContext" type="number" min="2048" step="1024" value="65536"></label><label>Max output<input id="profileOutput" type="number" min="256" step="256" value="8192"></label></div>
@@ -438,7 +659,9 @@
 
         <section class="settings-section">
           <h3>Model library</h3>
-          <div class="inline-input"><input id="pullModelName" placeholder="qwen3-coder:30b"><button id="pullModel">Pull</button></div>
+          <div id="activeOllamaInventory" class="muted small-copy"></div>
+          <div id="pullModelTarget" class="muted small-copy">Connect an active Ollama runtime before downloading a model.</div>
+          <div class="inline-input"><input id="pullModelName" placeholder="qwen3-coder:30b"><button id="pullModel" disabled>Pull to active runtime</button></div>
           <div id="modelLibrary" class="model-library"></div>
         </section>
       </div>
@@ -447,7 +670,12 @@
         <section class="settings-section warning-box"><strong>Server-wide settings</strong><p>KV cache type, Flash Attention, and parallelism require restarting the Ollama server. The restart button only controls an Ollama process started by this app.</p></section>
         <section class="settings-section">
           <h3>Ollama server</h3>
-          <label>Base URL<input id="ollamaBaseUrl"></label>
+          <label>Runtime name<input id="ollamaRuntimeName" placeholder="Local Ollama"></label>
+          <label>Runtime type<select id="ollamaRuntimeKind"><option value="local">Local</option><option value="lan">LAN / IP</option><option value="vpn">VPN / Tailscale</option><option value="remote">Remote / Public IP</option><option value="https">HTTPS / Reverse Proxy</option></select></label>
+          <label>Base URL<input id="ollamaBaseUrl" placeholder="http://127.0.0.1:11434 or http://192.168.1.50:11434"></label>
+          <label>Bearer API key environment variable<input id="ollamaApiKeyEnv" placeholder="OLLAMA_API_KEY"><span class="muted small-copy">Studio stores only the environment variable name, never the secret value.</span></label>
+          <div class="button-row"><button id="testOllamaConnection" class="sm-btn primary">Test Connection</button><button id="useTestedOllama" class="sm-btn" disabled>Use this server</button><span id="ollamaRuntimeStatus" class="muted"></span></div>
+          <div id="testedOllamaInventory" class="empty-state">Test a server to inspect its installed and currently loaded models before switching.</div>
           <label>KV cache precision<select id="kvCacheType"><option value="f16">f16 — highest quality</option><option value="q8_0">q8_0 — recommended</option><option value="q4_0">q4_0 — lowest memory</option></select></label>
           <label class="switch-row"><span>Flash Attention</span><input id="flashAttention" type="checkbox"></label>
           <div class="two-col"><label>Default context<input id="defaultContext" type="number" step="1024"></label><label>Parallel slots<input id="numParallel" type="number" min="1" max="32"></label></div>
@@ -464,29 +692,126 @@
         </section>
       </div>
 
+      <div id="settings-providers" class="settings-page">
+        <section class="settings-section">
+          <div class="section-heading-row"><div><h3>OpenAI-compatible providers</h3><p class="muted">Add OpenAI, gateways, vLLM, llama.cpp, or other compatible endpoints. Secrets stay in environment variables.</p></div><button id="refreshProviders" class="sm-btn">Refresh</button></div>
+          <label>Provider ID<input id="providerId" placeholder="openai or my-vllm"></label>
+          <label>Display name<input id="providerName" placeholder="OpenAI"></label>
+          <label>Base URL<input id="providerBaseUrl" placeholder="https://api.openai.com/v1"></label>
+          <label>API key environment variable<input id="providerApiKeyEnv" placeholder="OPENAI_API_KEY"></label>
+          <label>API<select id="providerApi"><option value="auto">Auto — Responses first, Chat fallback</option><option value="openai-responses">Responses API</option><option value="openai-completions">Chat Completions</option></select></label>
+          <div class="button-row"><button id="testProvider" disabled>Test endpoint</button><button id="saveProvider" class="primary" disabled>Save provider</button></div>
+        </section>
+        <section class="settings-section">
+          <h3>Configured providers</h3>
+          <div id="providerList" class="provider-list"></div>
+          <div id="providerDetail" class="provider-detail"></div>
+        </section>
+      </div>
+
+      <div id="settings-mcp" class="settings-page">
+        <section class="settings-section">
+          <div class="section-heading-row"><div><h3>MCP servers</h3><p class="muted">Connect stdio or HTTP MCP servers. Use <code>$ENV_VAR</code> references for credentials.</p></div><button id="mcpReload" class="sm-btn">Refresh</button></div>
+          <label>Server ID<input id="mcpId" placeholder="github"></label><label>Name<input id="mcpName" placeholder="GitHub MCP"></label>
+          <label>Transport<select id="mcpTransport"><option value="stdio">stdio</option><option value="http">HTTP / Streamable HTTP</option></select></label>
+          <div id="mcpStdioFields"><label>Command<input id="mcpCommand" placeholder="npx"></label><label>Arguments<input id="mcpArgs" placeholder="-y @modelcontextprotocol/server-filesystem ."></label><label>Working directory<input id="mcpCwd" placeholder="optional"></label><label>Environment JSON<textarea id="mcpEnv" rows="3" placeholder='{"TOKEN":"$GITHUB_TOKEN"}'></textarea></label></div>
+          <div id="mcpHttpFields" class="hidden"><label>URL<input id="mcpUrl" placeholder="https://example.com/mcp"></label><label>Headers JSON<textarea id="mcpHeaders" rows="3" placeholder='{"Authorization":"Bearer $MCP_TOKEN"}'></textarea></label></div>
+          <label class="switch-row"><span>Expose to Pi after connection</span><input id="mcpExposeNew" type="checkbox"></label><button id="mcpSave" class="primary full" disabled>Save MCP server</button>
+        </section>
+        <section class="settings-section"><h3>Connections & permissions</h3><div id="mcpServerList" class="provider-list"></div><div id="mcpDetail" class="provider-detail"></div></section>
+        <section class="settings-section"><h3>MCP logs</h3><pre id="mcpLogs" class="rpc-result">No MCP logs yet.</pre></section>
+      </div>
+
+      <div id="settings-harness" class="settings-page">
+        <section class="settings-section">
+          <div class="section-heading-row"><div><h3>Agent / Coding Harness</h3><p class="muted">A harness defines how Pi works around the model. Coding harnesses are agent harnesses with repository, edit, test, Git, LSP, terminal, and Preview conventions layered on top.</p></div><div class="button-row"><button id="harnessSaveEffective">Save effective</button><button id="harnessNew">New harness</button><button id="harnessStartSession" class="primary">New Session</button></div></div>
+          <div id="effectiveHarnessContract" class="effective-contract"></div>
+          <p id="harnessLoadWarning" class="muted small-copy hidden"></p>
+        </section>
+        <section class="settings-section">
+          <h3>Saved harnesses & presets</h3>
+          <p class="muted small-copy">Built-ins are immutable. Custom harnesses can be global or committed with a project under <code>.pi/harnesses/</code>. Create one from scratch, duplicate a preset, or save the effective setup from the current session.</p>
+          <div id="harnessPresetList" class="harness-preset-list"></div>
+        </section>
+        <section class="settings-section">
+          <h3>Pi-native composition</h3>
+          <p class="muted">Harnesses build on Pi rather than replacing it. Project/global resources stay ordinary Pi resources and remain usable from Pi CLI.</p>
+          <div class="harness-resource-grid">
+            <button id="harnessOpenResources"><strong>Resources</strong><span>Instructions · skills · prompts · extensions · packages</span></button>
+            <button id="harnessOpenMcp"><strong>MCP</strong><span>Optional external tools and resources</span></button>
+            <button id="harnessOpenAdvanced"><strong>Raw Pi / Advanced</strong><span>RPC escape hatch and Pi command configuration</span></button>
+          </div>
+        </section>
+        <section class="settings-section harness-roadmap-note">
+          <h3>Custom harnesses</h3>
+          <p class="muted">Use <strong>New harness</strong> to choose Project or Global scope, select Pi default tools or a bounded allowlist, add installed extension tool names when needed, and save guidance. Use <strong>Duplicate</strong> on a preset for a known-good starting point, or <strong>Save effective</strong> after a session to preserve the setup you actually used.</p>
+        </section>
+      </div>
+
       <div id="settings-session" class="settings-page">
         <section class="settings-section">
           <h3>Session controls</h3>
           <label>Session name<input id="sessionNameInput" placeholder="feature-auth-fix"></label>
-          <button id="setSessionName" class="full">Set session name</button>
-          <label>Steering delivery<select id="steeringMode"><option value="one-at-a-time">One at a time</option><option value="all">All</option></select></label>
-          <label>Follow-up delivery<select id="followUpMode"><option value="one-at-a-time">One at a time</option><option value="all">All</option></select></label>
-          <label class="switch-row"><span>Auto compaction</span><input id="autoCompaction" type="checkbox" checked></label>
-          <label class="switch-row"><span>Auto retry</span><input id="autoRetry" type="checkbox" checked></label>
-          <label class="switch-row"><span>Ask permission before tool calls (bash/write)</span><input id="confirmTools" type="checkbox"></label>
+          <button id="setSessionName" class="full" disabled>Set session name</button>
+          <label>Steering delivery<select id="steeringMode" disabled><option value="one-at-a-time">One at a time</option><option value="all">All</option></select></label>
+          <label>Follow-up delivery<select id="followUpMode" disabled><option value="one-at-a-time">One at a time</option><option value="all">All</option></select></label>
+          <label class="switch-row"><span>Auto compaction</span><input id="autoCompaction" type="checkbox" checked disabled></label>
+          <label class="switch-row"><span>Auto retry</span><input id="autoRetry" type="checkbox" checked disabled></label>
+          <label class="switch-row"><span>Notify when risky tools start <small class="muted">Does not pause Pi or sandbox execution.</small></span><input id="confirmTools" type="checkbox"></label>
           <label>Compaction instructions<textarea id="compactInstructions" rows="3" placeholder="Preserve decisions, changed files, failures, and remaining work."></textarea></label>
-          <button id="compactWithInstructions" class="full">Compact now</button>
+          <button id="compactWithInstructions" class="full" disabled>Compact now</button>
         </section>
         <section class="settings-section">
           <h3>Commands, skills, prompts</h3>
-          <button id="loadCommands" class="full">Load available commands</button>
+          <button id="loadCommands" class="full" disabled>Load available commands</button>
           <div id="commandList" class="command-list muted">Not loaded</div>
         </section>
         <section class="settings-section">
           <h3>Direct shell via Pi</h3>
           <textarea id="bashCommand" rows="3" placeholder="git status --short"></textarea>
-          <button id="runBash" class="full">Run command</button>
+          <button id="runBash" class="full" disabled>Run command</button>
           <pre id="bashOutput" class="bash-output"></pre>
+        </section>
+        <section class="settings-section">
+          <h3>Qwen3-TTS</h3>
+          <p class="muted">Optional local speech generation. Generation automatically wakes the TTS model; Wake and Sleep are manual controls for VRAM management.</p>
+          <p id="ttsAgentToolStatus" class="muted">Agent tool availability follows the selected harness.</p>
+          <label>TTS endpoint<input id="ttsUrl" value="http://localhost:7860" placeholder="http://localhost:7860"></label>
+          <div class="button-row"><button id="ttsStatus" class="full">Check TTS status</button><button id="ttsWake">Wake</button><button id="ttsSleep">Sleep</button></div>
+          <div id="ttsStatusText" class="muted">TTS status not checked.</div>
+          <label>Text to speak<textarea id="ttsText" rows="4" placeholder="Type text or use Speak on an assistant answer…"></textarea></label>
+          <div class="button-row"><button id="ttsGenerate" class="primary">Generate audio</button><button id="ttsBrowserSpeak">Use browser voice</button></div>
+          <audio id="ttsAudio" controls class="full hidden"></audio>
+        </section>
+      </div>
+
+      <div id="settings-interaction" class="settings-page">
+        <section class="settings-section">
+          <h3>Interaction mode</h3>
+          <p class="muted">Every feature remains mouse-accessible. Keyboard Enhanced adds leader shortcuts; Vim adds modal navigation on top.</p>
+          <label>Mode
+            <select id="interactionMode">
+              <option value="standard">Standard</option>
+              <option value="keyboard">Keyboard Enhanced</option>
+              <option value="vim">Vim / Neovim</option>
+            </select>
+          </label>
+          <label class="switch-row"><span>Show leader-key hints</span><input id="leaderHints" type="checkbox" checked></label>
+          <label class="switch-row"><span>Automatic Git snapshot before prompts</span><input id="autoGitCheckpoints" type="checkbox" checked></label>
+          <label class="switch-row"><span>Show mode in status bar</span><input id="showModeBadge" type="checkbox" checked></label>
+          <button id="openKeymapHelp" class="full">Open keyboard cheat sheet</button>
+        </section>
+        <section class="settings-section">
+          <h3>Core shortcuts</h3>
+          <div class="keymap-cheatsheet">
+            <div><kbd>Ctrl/Cmd</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd><span>Command palette</span></div>
+            <div><kbd>Space</kbd><span>Leader menu (Keyboard/Vim)</span></div>
+            <div><kbd>Esc</kbd><span>Vim Normal mode / close overlay</span></div>
+            <div><kbd>i</kbd><span>Vim Insert mode / focus current editor</span></div>
+            <div><kbd>j</kbd> / <kbd>k</kbd><span>Navigate chat/tree items</span></div>
+            <div><kbd>g g</kbd> / <kbd>G</kbd><span>First / last item</span></div>
+            <div><kbd>:</kbd><span>Command mode</span></div>
+          </div>
         </section>
       </div>
 
@@ -495,13 +820,13 @@
           <h3>Raw Pi RPC</h3>
           <p class="muted">All current and future Pi RPC commands can be sent here.</p>
           <textarea id="rawRpc" rows="7">{"type":"get_state"}</textarea>
-          <button id="sendRawRpc" class="primary full">Send RPC command</button>
+          <button id="sendRawRpc" class="primary full" disabled>Send RPC command</button>
           <pre id="rawRpcResult" class="rpc-result"></pre>
         </section>
         <section class="settings-section">
           <h3>Pi installation</h3>
           <div class="two-col"><label>Pi command<input id="piCommand"></label><label>Ollama command<input id="ollamaCommand"></label></div>
-          <label class="switch-row"><span>Trust project resources</span><input id="trustProjects" type="checkbox" checked></label>
+          <label class="switch-row"><span>Trust project resources</span><input id="trustProjects" type="checkbox"></label>
           <button id="saveCommands" class="full">Save command paths</button>
           <button id="syncModels" class="full">Synchronize Ollama models to Pi</button>
         </section>
@@ -519,12 +844,101 @@
     </aside>
   </div>
 
+  <!-- Session Launcher Modal -->
+  <div id="sessionLauncherModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sessionLauncherTitle">
+    <div class="modal-card session-launcher-card">
+      <div class="section-heading-row">
+        <div><h2 id="sessionLauncherTitle">New Pi Session</h2><p class="muted">A session starts from an explicit workspace + runtime + model + harness contract. GPU residency is shown for speed, but never changes your selected model.</p></div>
+        <button id="closeSessionLauncher" class="icon-btn" aria-label="Close session launcher">×</button>
+      </div>
+      <div class="session-launch-summary">
+        <div><span>Project</span><strong id="sessionLaunchWorkspace">No workspace</strong></div>
+        <div><span>Runtime</span><strong id="sessionLaunchRuntime">—</strong></div>
+      </div>
+      <label>Model
+        <select id="sessionLaunchModel"></select>
+        <input id="sessionLaunchCustomModel" class="hidden" autocomplete="off" placeholder="Custom provider/model or Ollama model ID">
+      </label>
+      <div id="sessionLaunchModelState" class="session-model-state muted">Select a model.</div>
+      <label>Harness
+        <select id="sessionLaunchHarness"></select>
+      </label>
+      <div class="harness-explainer">
+        <strong id="sessionHarnessName">Coding · Pi Default</strong>
+        <p id="sessionHarnessDescription" class="muted"></p>
+        <div id="sessionHarnessTools" class="harness-tool-chips"></div>
+      </div>
+      <label>Session name <span class="muted">optional</span>
+        <input id="sessionLaunchName" autocomplete="off" placeholder="e.g. Fix checkout regression">
+      </label>
+      <details class="session-launch-advanced">
+        <summary>Advanced session settings</summary>
+        <label>Thinking level<select id="sessionLaunchThinking"><option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
+        <p id="sessionLaunchBehavior" class="muted small-copy"></p>
+      </details>
+      <div class="modal-actions">
+        <button id="cancelSessionLauncher">Cancel</button>
+        <button id="confirmSessionLauncher" class="primary">Start New Session</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="projectManagerModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="projectManagerTitle">
+    <div class="modal-card project-manager-card">
+      <div class="section-heading-row"><div><h2 id="projectManagerTitle">Projects</h2><p class="muted">Open, create, or jump between recent local workspaces.</p></div><button id="projectManagerClose">Close</button></div>
+      <div class="project-manager-actions"><button id="projectManagerNew" class="primary">＋ New Project</button><button id="projectManagerOpen">📁 Open Folder</button><button id="projectManagerFromSession">⑂ Create from Session</button></div>
+      <section><div class="section-heading-row"><h3>Recent projects</h3><button id="projectManagerClearRecent" class="sm-btn ghost">Clear</button></div><div id="recentProjectList" class="recent-project-list"></div></section>
+    </div>
+  </div>
+
+  <div id="projectWizardModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="projectWizardTitle">
+    <div class="modal-card project-wizard-card">
+      <div class="section-heading-row"><div><h2 id="projectWizardTitle">New Project</h2><p id="projectWizardSubtitle" class="muted">Choose a name, parent folder, and starting template.</p></div><button id="projectWizardClose">Close</button></div>
+      <div id="projectWizardSource" class="project-source-card hidden"></div>
+      <label>Project name<input id="projectWizardName" autocomplete="off" placeholder="my-project"></label>
+      <label>Location<div class="project-location-row"><input id="projectWizardParent" autocomplete="off" placeholder="H:\Projects or /home/me/projects"><button id="projectWizardBrowse">Browse…</button></div></label>
+      <div class="project-final-path"><span>Final folder</span><strong id="projectWizardFinalPath">—</strong></div>
+      <label id="projectWizardTemplateRow">Start with<select id="projectWizardTemplate"><option value="empty">Empty project</option><option value="html">Plain HTML / CSS / JS</option><option value="node">Node.js</option></select></label>
+      <p id="projectWizardHint" class="muted small-copy">Studio creates the final project folder for you. Git onboarding appears after the folder opens.</p>
+      <div class="modal-actions"><button id="projectWizardCancel">Cancel</button><button id="projectWizardCreate" class="primary" disabled>Create & Open</button></div>
+    </div>
+  </div>
+
+  <div id="harnessBuilderModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="harnessBuilderTitle">
+    <div class="modal-card harness-builder-card">
+      <div class="section-heading-row"><div><h2 id="harnessBuilderTitle">New Harness</h2><p class="muted">Save a reusable Pi launch contract. Resources remain ordinary Pi project/global resources and are inherited rather than copied into the manifest.</p></div><button id="harnessBuilderClose">Close</button></div>
+      <div class="harness-builder-grid">
+        <label>Name<input id="harnessBuilderName" autocomplete="off" placeholder="Frontend Bug Fixer"></label>
+        <label>Scope<select id="harnessBuilderScope"><option value="project">This project</option><option value="global">Global</option></select></label>
+        <label>Kind<select id="harnessBuilderKind"><option value="coding">Coding harness</option><option value="agent">General agent harness</option></select></label>
+        <label class="harness-builder-wide">Description<input id="harnessBuilderDescription" autocomplete="off" placeholder="Bounded frontend debugging with tests and Preview"></label>
+      </div>
+      <section class="harness-builder-section">
+        <div class="section-heading-row"><div><h3>Pi tool surface</h3><p class="muted small-copy">Fewer tools reduce tool-selection noise for bounded tasks and smaller local models. Inherit Pi default when you need extension-provided tools without an allowlist.</p></div><label class="switch-row compact-switch"><span>Inherit Pi default tools</span><input id="harnessBuilderDefaultTools" type="checkbox"></label></div>
+        <div id="harnessBuilderCoreTools" class="harness-tool-picker">
+          <label><input type="checkbox" value="read">read</label><label><input type="checkbox" value="grep">grep</label><label><input type="checkbox" value="find">find</label><label><input type="checkbox" value="ls">ls</label><label><input type="checkbox" value="edit">edit</label><label><input type="checkbox" value="write">write</label><label><input type="checkbox" value="bash">bash</label>
+        </div>
+        <label>Additional tool names <span class="muted">comma-separated, for installed Pi extension tools</span><input id="harnessBuilderExtraTools" autocomplete="off" placeholder="browser, my_extension_tool"></label>
+      </section>
+      <section class="harness-builder-section">
+        <label>System guidance<textarea id="harnessBuilderPrompt" rows="8" placeholder="Inspect first. Keep changes bounded. Run the smallest relevant verification after edits."></textarea></label>
+      </section>
+      <section class="harness-builder-section harness-builder-resources">
+        <strong>Inherited Pi resources</strong>
+        <p class="muted small-copy">AGENTS.md, skills, prompts, extensions, packages, themes, and enabled MCP tools stay inspectable in Pi Platform. This harness references that effective environment instead of copying it into hidden state.</p>
+        <div class="button-row"><button id="harnessBuilderResources">Open Resources</button><button id="harnessBuilderMcp">Open MCP</button><button id="harnessBuilderMarketplace">Find packages</button></div>
+      </section>
+      <input id="harnessBuilderId" type="hidden">
+      <div class="modal-actions"><button id="harnessBuilderCancel">Cancel</button><button id="harnessBuilderSave" class="primary" disabled>Save Harness</button></div>
+    </div>
+  </div>
+
   <!-- Folder Browser Modal -->
-  <div id="folderBrowserModal" class="modal-overlay hidden">
+  <div id="folderBrowserModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="folderBrowserTitle">
     <div class="modal-card folder-browser-card">
       <div class="modal-header">
-        <h3>📁 Select Workspace Folder</h3>
-        <button id="closeFolderModal" class="icon-btn">×</button>
+        <h3 id="folderBrowserTitle">📁 Select Workspace Folder</h3>
+        <button id="closeFolderModal" class="icon-btn" aria-label="Close folder browser">×</button>
       </div>
       <div class="modal-body">
         <div id="driveBar" class="drive-bar"></div>
@@ -543,7 +957,88 @@
     </div>
   </div>
 
-  <div id="modal" class="modal-backdrop hidden">
+  <div id="gitOnboardingModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="gitOnboardingTitle">
+    <div class="modal-card git-onboarding-card">
+      <h2 id="gitOnboardingTitle">Version control is not initialized</h2>
+      <p>Project: <strong id="gitInitWorkspace"></strong></p>
+      <p id="gitInitStatus" class="muted"></p>
+      <div class="git-onboarding-benefits">
+        <div>✓ Prompt checkpoints</div>
+        <div>✓ Session ↔ code-state branching</div>
+        <div>✓ Historical restore / worktrees</div>
+        <div>✓ Create App from Here</div>
+      </div>
+      <label>Initial branch
+        <input id="gitInitBranch" value="main" autocomplete="off">
+      </label>
+      <label class="switch-row"><span>Create recommended <code>.gitignore</code> if none exists</span><input id="gitInitIgnore" type="checkbox" checked></label>
+      <label class="switch-row"><span>Create current project baseline commit</span><input id="gitInitBaseline" type="checkbox" checked></label>
+      <p class="muted small-copy">Existing <code>.gitignore</code> files are never overwritten. Potentially sensitive unignored files require confirmation before the baseline is created.</p>
+      <div class="modal-actions">
+        <button id="gitInitCancel">Cancel</button>
+        <button id="gitInitWithout">Open Without Git</button>
+        <button id="gitInitConfirm" class="primary">Initialize Git</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="packageMarketplace" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-label="Pi package marketplace">
+    <div class="modal-card package-market-card"><div class="section-heading-row"><div><h2>Pi Package Marketplace</h2><p class="muted">Search npm packages published for Pi, inspect what they load, choose a version, then install globally or per project.</p></div><button id="packageMarketClose">Close</button></div>
+      <div class="market-search-row"><input id="packageMarketQuery" placeholder="Search Pi packages"><select id="packageMarketType"><option value="">All resources</option><option value="extensions">Extensions</option><option value="skills">Skills</option><option value="prompts">Prompts</option><option value="themes">Themes</option></select><button id="packageMarketSearch" class="primary">Search</button></div>
+      <div class="package-market-grid"><div id="packageMarketResults" class="market-results"></div><div id="packageMarketDetail" class="market-detail"></div></div>
+      <div class="market-direct"><strong>Install a direct package source</strong><input id="packageDirectSource" placeholder="npm:pkg, git:github.com/user/repo, https://…, ./local"><select id="packageDirectScope"><option value="project">Project</option><option value="global">Global</option></select><button id="packageDirectInspect" disabled>Inspect source</button><button id="packageDirectInstall" disabled>Install</button></div><pre id="packageDirectProvenance" class="rpc-result hidden"></pre>
+    </div>
+  </div>
+
+  <div id="commandPalette" class="command-palette-overlay hidden" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="command-palette-card">
+      <div class="command-palette-input-row"><span>›</span><input id="commandPaletteInput" autocomplete="off" placeholder="Type a command…"><kbd>Esc</kbd></div>
+      <div id="commandPaletteList" class="command-palette-list"></div>
+      <div class="command-palette-footer"><span>↑↓ Navigate</span><span>Enter Run</span><span>Esc Close</span></div>
+    </div>
+  </div>
+
+  <div id="leaderOverlay" class="leader-overlay hidden" aria-live="polite">
+    <div class="leader-title"><span>Leader</span><kbd>Space</kbd></div>
+    <div id="leaderGrid" class="leader-grid"></div>
+  </div>
+
+  <div id="keymapHelp" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="keymapHelpTitle">
+    <div class="modal-card keymap-help-card">
+      <h2 id="keymapHelpTitle">Keyboard & Vim controls</h2>
+      <p class="muted">The GUI remains fully usable with mouse and standard shortcuts. These controls are an optional power-user layer.</p>
+      <div id="keymapHelpContent" class="keymap-help-content"></div>
+      <div class="modal-actions"><button id="closeKeymapHelp" class="primary">Close</button></div>
+    </div>
+  </div>
+
+  <div id="powerStateModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="powerStateTitle">
+    <div class="modal-card keymap-help-card">
+      <h2 id="powerStateTitle">Keyboard state</h2>
+      <p class="muted">Named registers store copied workspace content. Semantic macros replay Studio commands instead of fragile mouse coordinates.</p>
+      <div class="power-state-grid">
+        <section><h3>Registers</h3><div id="registerList" class="power-list empty-state">No registers yet.</div></section>
+        <section><h3>Macros</h3><div id="macroList" class="power-list empty-state">No macros yet.</div></section>
+      </div>
+      <div class="modal-actions"><button id="closePowerState" class="primary">Close</button></div>
+    </div>
+  </div>
+
+  <div id="sessionOperationModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="sessionOperationTitle">
+    <div class="modal-card session-operation-card">
+      <div class="modal-header">
+        <h3 id="sessionOperationTitle">Fork session</h3>
+        <button id="sessionOperationClose" class="icon-btn" aria-label="Close session dialog">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="sessionOperationMessage" class="muted"></p>
+        <label>Session name<input id="sessionOperationName" autocomplete="off" placeholder="feature-auth-experiment"></label>
+      </div>
+      <div class="modal-actions"><button id="sessionOperationCancel">Cancel</button><button id="sessionOperationConfirm" class="primary" disabled>Fork Session</button></div>
+    </div>
+  </div>
+
+  <div id="modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
     <div class="modal-card">
       <h2 id="modalTitle">Pi extension request</h2>
       <p id="modalMessage"></p>
@@ -553,6 +1048,11 @@
   </div>
 
   <div id="toastHost" class="toast-host"></div>
+  <script src="/vendor/xterm/xterm/lib/xterm.js"></script>
+  <script src="/vendor/xterm/fit/lib/addon-fit.js"></script>
+  <script src="/vendor/xterm/search/lib/addon-search.js"></script>
+  <script src="/vendor/xterm/web-links/lib/addon-web-links.js"></script>
+  <script src="/vendor/xterm/webgl/lib/addon-webgl.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

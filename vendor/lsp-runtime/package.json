@@ -1,0 +1,12 @@
+{
+  "name":"pi-studio-lsp-runtime",
+  "version":"1.0.0",
+  "private":true,
+  "dependencies":{
+    "typescript-language-server":"5.3.0",
+    "typescript":"7.0.2",
+    "pyright":"1.1.411",
+    "@zed-industries/vscode-langservers-extracted":"4.10.8",
+    "@angular/language-server":"22.0.8"
+  }
+}

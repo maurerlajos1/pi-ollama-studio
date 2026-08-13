@@ -1,6 +1,10 @@
+# Current continuation note
+
+For v1.8.0-rc.4 continuation, read **`CODEX_HANDOFF.md` first**. It contains the current verified test state, immutable Windows invariants, implemented rc.4 capabilities, the next UI slice, and explicit deferred scope. When older notes conflict with it, the handoff and current code/tests win.
+
 # Pi Ollama Studio — Agent Guidelines & Repository Guide
 
-Welcome! This repository houses **Pi Ollama Studio** (v1.1.2), a local coding agent web IDE built on top of the **Pi Agent RPC Engine** and **Ollama**.
+Welcome! This repository houses **Pi Ollama Studio** (v1.8.0-rc.4), a local coding agent web IDE built on top of the **Pi Agent RPC Engine** and **Ollama**.
 
 ---
 
@@ -68,4 +72,4 @@ $env:OLLAMA_MODELS="H:\ollama-models"; npm start
 ## 🧪 Testing Guidelines
 - Unit tests are located in `test/`.
 - Run `npm test` after making changes to core modules (`config.mjs`, `pi-rpc.mjs`, `server.mjs`, `system.mjs`).
-- Ensure all 11+ test suites pass without errors.
+- Keep `npm run check` and the complete `npm test` suite green; the handoff baseline is 197/197 deterministic tests. Also run the live/Windows gates documented in `docs/handoff/WINDOWS_RELEASE_GATE.md` when applicable.

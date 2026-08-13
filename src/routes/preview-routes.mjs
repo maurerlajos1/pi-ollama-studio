@@ -1,0 +1,10 @@
+export function createPreviewRoutes({manager,readBody,json,sendEvent,resolveWorkspacePath,loadPreviewConfig,savePreviewConfig,suggestPreviewCommand}){
+  return async function handlePreviewRoutes(req,res,url){const {pathname,searchParams}=url;
+    if(req.method==='GET'&&pathname==='/api/preview'){const workspace=searchParams.get('workspace')||'';const resolved=await resolveWorkspacePath(workspace,'.');const config=await loadPreviewConfig(resolved.root);const suggestion=!config.command?await suggestPreviewCommand(resolved.root):{command:'',source:''};json(res,200,{ok:true,config,preview:manager.snapshot(resolved.root),suggestion});return true;}
+    if(req.method==='PUT'&&pathname==='/api/preview/config'){const body=await readBody(req);const resolved=await resolveWorkspacePath(body.workspace,'.');const config=await savePreviewConfig(resolved.root,body);sendEvent('preview_changed',{workspace:resolved.root,action:'config'});json(res,200,{ok:true,config});return true;}
+    if(req.method==='POST'&&pathname==='/api/preview/start'){const body=await readBody(req);const resolved=await resolveWorkspacePath(body.workspace,'.');const current=await loadPreviewConfig(resolved.root);const preview=await manager.start(resolved.root,{...current,...body});sendEvent('preview_changed',{workspace:resolved.root,action:'start',preview});json(res,200,{ok:true,preview});return true;}
+    if(req.method==='POST'&&pathname==='/api/preview/restart'){const body=await readBody(req);const resolved=await resolveWorkspacePath(body.workspace,'.');const preview=await manager.restart(resolved.root);sendEvent('preview_changed',{workspace:resolved.root,action:'restart',preview});json(res,200,{ok:true,preview});return true;}
+    if(req.method==='POST'&&pathname==='/api/preview/stop'){const body=await readBody(req);const resolved=await resolveWorkspacePath(body.workspace,'.');const result=await manager.stop(resolved.root);sendEvent('preview_changed',{workspace:resolved.root,action:'stop'});json(res,200,{ok:true,...result});return true;}
+    return false;
+  };
+}

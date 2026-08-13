@@ -3,7 +3,9 @@ import { EventEmitter } from 'node:events';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { readConfig, resolveWorkspaceSessionDir } from './config.mjs';
+import { canonicalWorkspacePath, readConfig, resolveWorkspaceSessionDir } from './config.mjs';
+import { prepareSpawn } from './spawn-command.mjs';
+import { terminateProcessTree } from './process-tree.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -36,10 +38,13 @@ export class PiRpcProcess extends EventEmitter {
   #stdoutBuffer = '';
   #pending = new Map();
   #counter = 0;
+  #lifecycle = Promise.resolve();
 
   workspace = null;
   sessionDir = null;
   modelId = null;
+  harnessId = null;
+  tools = null;
   startedAt = null;
   lastError = null;
 
@@ -53,18 +58,31 @@ export class PiRpcProcess extends EventEmitter {
       workspace: this.workspace,
       sessionDir: this.sessionDir,
       modelId: this.modelId,
+      harnessId: this.harnessId,
+      tools: this.tools ? [...this.tools] : null,
       startedAt: this.startedAt,
       pid: this.#child?.pid || null,
       lastError: this.lastError
     };
   }
 
-  async start({ workspace, provider: inputProvider, modelId, sessionPath, sessionName } = {}) {
-    await this.stop();
+  #enqueueLifecycle(task) {
+    const run = this.#lifecycle.catch(() => {}).then(task);
+    this.#lifecycle = run.catch(() => {});
+    return run;
+  }
+
+  start(options = {}) {
+    return this.#enqueueLifecycle(() => this.#startUnlocked(options));
+  }
+
+  async #startUnlocked({ workspace, provider: inputProvider, modelId, sessionPath, sessionName, mcpBridgeUrl, harnessId = 'coding-default', tools = null, appendSystemPrompt = '', extensions = [] } = {}) {
+    await this.#stopUnlocked();
     const cfg = await readConfig();
-    const cwd = path.resolve(workspace || cfg.defaultWorkspace || process.cwd());
-    const stat = await fs.stat(cwd).catch(() => null);
-    if (!stat?.isDirectory()) throw new Error(`Workspace does not exist or is not a directory: ${cwd}`);
+    const requestedCwd = path.resolve(workspace || cfg.defaultWorkspace || process.cwd());
+    const stat = await fs.stat(requestedCwd).catch(() => null);
+    if (!stat?.isDirectory()) throw new Error(`Workspace does not exist or is not a directory: ${requestedCwd}`);
+    const cwd = await canonicalWorkspacePath(requestedCwd);
 
     await ensureWorkspaceAgentsMd(cwd, cfg);
 
@@ -105,25 +123,36 @@ export class PiRpcProcess extends EventEmitter {
         }
       }
       args.push('--provider', provider, '--model', model);
-      if (provider === 'ollama') {
-        args.push('--api-key', 'ollama');
-      }
+      // Ollama credentials are resolved through Pi's provider configuration in models.json.
+      // Do not place bearer tokens (or placeholder keys) in process arguments: remote runtimes
+      // may reference an environment variable such as $OLLAMA_API_KEY there.
     }
 
+    if (Array.isArray(tools) && tools.length) {
+      const normalizedTools = [...new Set(tools.map((item) => String(item || '').trim()).filter(Boolean))];
+      if (normalizedTools.length) args.push('--tools', normalizedTools.join(','));
+    }
+    if (String(appendSystemPrompt || '').trim()) args.push('--append-system-prompt', String(appendSystemPrompt).trim());
+    for (const extension of Array.isArray(extensions) ? extensions : []) {
+      const rawExtensionPath = String(extension || '').trim();
+      if (rawExtensionPath) args.push('--extension', path.resolve(rawExtensionPath));
+    }
     if (resolvedSessionPath) args.push('--session', resolvedSessionPath);
 
-    const child = spawn(cfg.piCommand, args, {
-      cwd,
-      env: {
-        ...process.env,
-        NO_COLOR: '1',
-        FORCE_COLOR: '0',
-        PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK || '1',
-        PI_OFFLINE: cfg.noCloud ? '1' : (process.env.PI_OFFLINE || '0')
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
-      windowsHide: true
+    const childEnv = {
+      ...process.env,
+      NO_COLOR: '1', FORCE_COLOR: '0',
+      PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK || '1',
+      PI_OFFLINE: cfg.noCloud ? '1' : (process.env.PI_OFFLINE || '0'),
+      // Pi extensions such as @ollama/pi-web-search must use the same
+      // runtime Studio selected for the session, not Ollama's default 11434.
+      PI_OLLAMA_BASE_URL: String(cfg.ollamaBaseUrl || '').replace(/\/+$/, ''),
+      ...(mcpBridgeUrl ? { PI_OLLAMA_STUDIO_MCP_URL: String(mcpBridgeUrl), PI_OLLAMA_STUDIO_URL: String(mcpBridgeUrl) } : {})
+    };
+    const prepared = prepareSpawn(cfg.piCommand, args, { cwd, env: childEnv });
+    const child = spawn(prepared.command, prepared.args, {
+      cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+      detached: process.platform !== 'win32', ...prepared.options
     });
 
     this.#child = child;
@@ -131,25 +160,32 @@ export class PiRpcProcess extends EventEmitter {
     this.workspace = cwd;
     this.sessionDir = sessionDir;
     this.modelId = selectedModel || null;
+    this.harnessId = String(harnessId || 'coding-default').trim() || 'coding-default';
+    this.tools = Array.isArray(tools) ? [...new Set(tools.map((item) => String(item || '').trim()).filter(Boolean))] : null;
     this.startedAt = new Date().toISOString();
     this.lastError = null;
 
     const decoder = new StringDecoder('utf8');
-    child.stdout.on('data', (chunk) => this.#consumeStdout(decoder.write(chunk)));
-    child.stdout.on('end', () => this.#consumeStdout(decoder.end(), true));
-    child.stderr.on('data', (chunk) => this.emit('stderr', String(chunk)));
+    child.stdout.on('data', (chunk) => { if (this.#child === child) this.#consumeStdout(decoder.write(chunk)); });
+    child.stdout.on('end', () => { if (this.#child === child) this.#consumeStdout(decoder.end(), true); });
+    child.stderr.on('data', (chunk) => { if (this.#child === child) this.emit('stderr', String(chunk)); });
 
     child.on('error', (error) => {
-      if (this.#child === child) this.#child = null;
+      if (this.#child !== child) return;
+      this.#child = null;
       this.lastError = error.message;
       this.emit('error', error);
       this.#rejectPending(error);
     });
     child.on('exit', (code, signal) => {
       const expected = this.#child !== child;
-      if (this.#child === child) this.#child = null;
-      this.emit('exit', { code, signal, expected });
-      this.#rejectPending(new Error(`Pi RPC exited${code == null ? '' : ` with code ${code}`}`));
+      const stale = expected && Boolean(this.#child);
+      if (!expected) {
+        this.#child = null;
+        void terminateProcessTree(child, { graceMs: 600 }).catch(() => {});
+        this.#rejectPending(new Error(`Pi RPC exited${code == null ? '' : ` with code ${code}`}`));
+      }
+      this.emit('exit', { code, signal, expected, stale });
     });
 
     try {
@@ -168,7 +204,7 @@ export class PiRpcProcess extends EventEmitter {
       return state;
     } catch (error) {
       this.lastError = error.message;
-      if (this.#child === child) await this.stop().catch(() => {});
+      if (this.#child === child) await this.#stopUnlocked().catch(() => {});
       throw error;
     }
   }
@@ -202,7 +238,14 @@ export class PiRpcProcess extends EventEmitter {
       this.#pending.delete(payload.id);
       clearTimeout(pending.timer);
       if (payload.success === false) pending.reject(new Error(payload.error || `${payload.command || 'Pi command'} failed`));
-      else pending.resolve(payload);
+      else {
+        if (pending.command?.type === 'set_model') {
+          const provider = String(pending.command.provider || '').trim();
+          const model = String(pending.command.modelId || pending.command.model || '').trim();
+          if (model) this.modelId = provider && provider !== 'ollama' ? `${provider}/${model}` : model;
+        }
+        pending.resolve(payload);
+      }
     }
     this.emit('event', payload);
   }
@@ -215,13 +258,16 @@ export class PiRpcProcess extends EventEmitter {
   request(command, timeoutMs = 60000) {
     if (!command || typeof command !== 'object' || Array.isArray(command)) throw new Error('Pi RPC command must be an object');
     const id = String(command.id || `studio-${Date.now()}-${++this.#counter}`);
+    if (this.#pending.has(id)) {
+      return Promise.reject(Object.assign(new Error(`Pi RPC request ID is already in flight: ${id}`), { code: 'PI_RPC_DUPLICATE_ID' }));
+    }
     const request = { ...command, id };
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(id);
         reject(new Error(`Pi RPC command timed out: ${request.type}`));
       }, timeoutMs);
-      this.#pending.set(id, { resolve, reject, timer });
+      this.#pending.set(id, { resolve, reject, timer, command: request });
       try {
         this.send(request);
       } catch (error) {
@@ -237,18 +283,31 @@ export class PiRpcProcess extends EventEmitter {
     this.send(command);
   }
 
-  async stop() {
+  stop({ expectedWorkspace = '' } = {}) {
+    return this.#enqueueLifecycle(async () => {
+      const expected = String(expectedWorkspace || '').trim();
+      if (expected && this.running && this.workspace) {
+        const [expectedReal, activeReal] = await Promise.all([
+          canonicalWorkspacePath(expected).catch(() => path.resolve(expected)),
+          canonicalWorkspacePath(this.workspace).catch(() => path.resolve(this.workspace))
+        ]);
+        const expectedKey = process.platform === 'win32' ? expectedReal.toLowerCase() : expectedReal;
+        const activeKey = process.platform === 'win32' ? activeReal.toLowerCase() : activeReal;
+        if (expectedKey !== activeKey) {
+          return { stopped: false, reason: 'workspace-mismatch', status: this.status() };
+        }
+      }
+      await this.#stopUnlocked();
+      return { stopped: true, status: this.status() };
+    });
+  }
+
+  async #stopUnlocked() {
     const child = this.#child;
     if (!child) return;
     this.#child = null;
     try { child.stdin.end(); } catch { /* already closed */ }
-    try { child.kill('SIGTERM'); } catch { /* already exited */ }
-    await Promise.race([
-      new Promise((resolve) => child.once('exit', resolve)),
-      sleep(2500).then(() => {
-        try { child.kill('SIGKILL'); } catch { /* already exited */ }
-      })
-    ]);
+    await terminateProcessTree(child, { graceMs: 1200 }).catch(() => {});
     this.#rejectPending(new Error('Pi RPC stopped'));
   }
 

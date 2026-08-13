@@ -4,6 +4,27 @@ import { resolveWorkspaceSessionDir } from './config.mjs';
 
 const MAX_INSPECT_BYTES = 50 * 1024 * 1024;
 
+const WINDOWS_RESERVED_BASENAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+export function sanitizeProjectDirectoryName(value) {
+  let clean = String(value || '').trim().replace(/[\\/:*?"<>|]/g, '_').replace(/[. ]+$/g, '');
+  if (WINDOWS_RESERVED_BASENAMES.test(clean)) clean = `_${clean}`;
+  clean = clean.slice(0, 120).replace(/[. ]+$/g, '');
+  if (!clean || clean === '.' || clean === '..') throw new Error('Project name must be a normal directory name');
+  return clean;
+}
+
+async function atomicWriteText(file, content) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  try {
+    await fs.writeFile(tmp, content, 'utf8');
+    await fs.rename(tmp, file);
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+  }
+}
+
 async function readRange(file, position, maxBytes) {
   const handle = await fs.open(file, 'r');
   try {
@@ -97,40 +118,99 @@ export async function inspectSession(workspace, sessionPath) {
     if (!line.trim()) continue;
     try { entries.push(JSON.parse(line)); } catch (error) { errors.push({ line: index + 1, error: error.message }); }
   }
-  return { path: file, size: stat.size, entries, errors };
+  return { path: file, size: stat.size, entries, tree: buildSessionTree(entries), errors };
+}
+
+
+function entryIdentity(entry) {
+  return entry?.id || entry?.nodeId || entry?.messageId || null;
+}
+
+function entryParentIdentity(entry) {
+  return entry?.parentId || entry?.parentNodeId || entry?.parentMessageId || null;
+}
+
+export function buildSessionTree(entries = []) {
+  const nodes = (Array.isArray(entries) ? entries : []).map((entry) => ({ entry, children: [] }));
+  const byId = new Map();
+  for (const node of nodes) {
+    const id = entryIdentity(node.entry);
+    if (id != null && !byId.has(String(id))) byId.set(String(id), node);
+  }
+
+  const roots = [];
+  for (const node of nodes) {
+    const id = entryIdentity(node.entry);
+    const parentId = entryParentIdentity(node.entry);
+    const parent = parentId != null ? byId.get(String(parentId)) : null;
+    let cyclic = false;
+    if (parent && id != null) {
+      const seen = new Set([String(id)]);
+      let cursor = parent;
+      while (cursor) {
+        const cursorId = entryIdentity(cursor.entry);
+        if (cursorId == null || !seen.add(String(cursorId))) { cyclic = true; break; }
+        const nextParent = entryParentIdentity(cursor.entry);
+        cursor = nextParent != null ? byId.get(String(nextParent)) : null;
+      }
+    }
+    if (parent && parent !== node && !cyclic) parent.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
+}
+
+function branchEntriesToNode(entries, targetNodeId) {
+  if (!targetNodeId) return [...entries];
+  const byId = new Map();
+  for (const entry of entries) {
+    const id = entryIdentity(entry);
+    if (id) byId.set(String(id), entry);
+  }
+  let current = byId.get(String(targetNodeId));
+  if (!current) throw Object.assign(new Error(`Session node not found: ${targetNodeId}`), { statusCode: 404 });
+  const keep = new Set();
+  const seen = new Set();
+  while (current) {
+    const id = entryIdentity(current);
+    if (!id || seen.has(String(id))) break;
+    keep.add(String(id));
+    seen.add(String(id));
+    const parentId = current.parentId || current.parentNodeId || current.parentMessageId || null;
+    current = parentId ? byId.get(String(parentId)) : null;
+  }
+  return entries.filter((entry, index) => index === 0 || (entryIdentity(entry) && keep.has(String(entryIdentity(entry)))));
 }
 
 export async function forkSession(workspace, sourceSessionPath, targetNodeId, newSessionName = '') {
   const { entries } = await inspectSession(workspace, sourceSessionPath);
   const dir = await resolveWorkspaceSessionDir(workspace, { create: true });
 
-  const sliced = [];
-  if (!targetNodeId) {
-    sliced.push(...entries);
-  } else {
-    for (const entry of entries) {
-      sliced.push(entry);
-      if (entry.id === targetNodeId || entry.nodeId === targetNodeId || entry.messageId === targetNodeId) {
-        break;
-      }
-    }
-  }
+  const sliced = branchEntriesToNode(entries, targetNodeId);
 
   const newId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const newFileName = `${newId}.jsonl`;
   const targetFile = path.join(dir, newFileName);
+  const resolvedName = newSessionName || `Fork of ${path.basename(sourceSessionPath, '.jsonl')}`;
 
   if (sliced.length > 0 && (sliced[0].type === 'session_header' || sliced[0].id)) {
     sliced[0] = {
       ...sliced[0],
       id: newId,
-      name: newSessionName || `Fork of ${path.basename(sourceSessionPath, '.jsonl')}`,
+      name: resolvedName,
       parentSession: path.basename(sourceSessionPath)
     };
   }
+  // Pi's latest session_info record is authoritative for display names. A
+  // full clone can contain the source session's later rename, which would
+  // otherwise override the new header and make the clone appear under the
+  // old name. Keep the copied record shape/IDs, but rewrite its name.
+  for (let index = 1; index < sliced.length; index++) {
+    if (sliced[index]?.type === 'session_info') sliced[index] = { ...sliced[index], name: resolvedName };
+  }
 
   const content = sliced.map((e) => JSON.stringify(e)).join('\n') + '\n';
-  await fs.writeFile(targetFile, content, 'utf8');
+  await atomicWriteText(targetFile, content);
 
   return { ok: true, sessionId: newId, fileName: newFileName, path: targetFile };
 }
@@ -139,59 +219,70 @@ export async function cloneSession(workspace, sourceSessionPath, newSessionName 
   return forkSession(workspace, sourceSessionPath, null, newSessionName || `Clone of ${path.basename(sourceSessionPath, '.jsonl')}`);
 }
 
-export async function createProjectFromNode(sourceWorkspace, sourceSessionPath, targetNodeId, newProjectName, parentDir = '') {
-  if (!newProjectName || !newProjectName.trim()) {
-    throw new Error('Project name is required');
-  }
-  const cleanName = newProjectName.trim().replace(/[\\/:*?"<>|]/g, '_');
-  const baseDir = parentDir ? path.resolve(parentDir) : path.dirname(path.resolve(sourceWorkspace));
+export async function createProjectFromNode(sourceWorkspace, sourceSessionPath, targetNodeId, newProjectName, parentDir = '', { copyWorkspace = false } = {}) {
+  if (!newProjectName || !newProjectName.trim()) throw new Error('Project name is required');
+  const cleanName = sanitizeProjectDirectoryName(newProjectName);
+  const sourceRoot = path.resolve(sourceWorkspace);
+  const baseDir = parentDir ? path.resolve(parentDir) : path.dirname(sourceRoot);
   const newWorkspaceDir = path.join(baseDir, cleanName);
 
-  await fs.mkdir(newWorkspaceDir, { recursive: true });
-
-  const agentsPath = path.join(newWorkspaceDir, 'AGENTS.md');
-  try {
-    await fs.access(agentsPath);
-  } catch {
-    const defaultContent = `# ${cleanName}\n\nProject created from Pi Session prompt node.\n\n## Instructions\n- Maintain clean architecture and test coverage.\n`;
-    await fs.writeFile(agentsPath, defaultContent, 'utf8');
-  }
-
-  const targetSessionDir = await resolveWorkspaceSessionDir(newWorkspaceDir, { create: true });
+  // Validate the source session/node before mutating the filesystem. A bad node must
+  // never leave a copied directory or partially-created project behind.
   const { entries } = await inspectSession(sourceWorkspace, sourceSessionPath);
+  const sliced = branchEntriesToNode(entries, targetNodeId);
 
-  const sliced = [];
-  if (!targetNodeId) {
-    sliced.push(...entries);
-  } else {
-    for (const entry of entries) {
-      sliced.push(entry);
-      if (entry.id === targetNodeId || entry.nodeId === targetNodeId || entry.messageId === targetNodeId) {
-        break;
-      }
+  let targetExisted = false;
+  if (copyWorkspace) {
+    const relToSource = path.relative(sourceRoot, newWorkspaceDir);
+    if (!relToSource.startsWith('..') && !path.isAbsolute(relToSource)) throw new Error('Fallback project target must be outside the source workspace');
+    const existing = await fs.stat(newWorkspaceDir).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error));
+    targetExisted = Boolean(existing);
+    if (existing) {
+      const existingEntries = existing.isDirectory() ? await fs.readdir(newWorkspaceDir) : ['not-a-directory'];
+      if (existingEntries.length) throw new Error('Fallback project target already exists and is not empty');
     }
   }
 
-  const newId = `session-${Date.now()}`;
-  const newFileName = `${newId}.jsonl`;
-  const targetSessionFile = path.join(targetSessionDir, newFileName);
+  try {
+    if (copyWorkspace) {
+      await fs.cp(sourceRoot, newWorkspaceDir, {
+        recursive: true,
+        force: false,
+        filter: (source) => {
+          const rel = path.relative(sourceRoot, source);
+          if (!rel) return true;
+          const normalized = rel.split(path.sep).join('/');
+          return normalized !== '.git' && !normalized.startsWith('.git/')
+            && normalized !== 'node_modules' && !normalized.startsWith('node_modules/')
+            && normalized !== '.pi/studio-sessions' && !normalized.startsWith('.pi/studio-sessions/');
+        }
+      });
+    } else {
+      await fs.mkdir(newWorkspaceDir, { recursive: true });
+    }
 
-  if (sliced.length > 0) {
-    sliced[0] = {
-      ...sliced[0],
-      id: newId,
-      name: `${cleanName} Initial Session`,
-      cwd: newWorkspaceDir
-    };
+    const agentsPath = path.join(newWorkspaceDir, 'AGENTS.md');
+    try { await fs.access(agentsPath); }
+    catch {
+      const defaultContent = `# ${cleanName}\n\nProject created from Pi Session prompt node.\n\n## Instructions\n- Maintain clean architecture and test coverage.\n`;
+      await atomicWriteText(agentsPath, defaultContent);
+    }
+
+    const targetSessionDir = await resolveWorkspaceSessionDir(newWorkspaceDir, { create: true });
+    const newId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const newFileName = `${newId}.jsonl`;
+    const targetSessionFile = path.join(targetSessionDir, newFileName);
+    if (sliced.length > 0) {
+      sliced[0] = { ...sliced[0], id: newId, name: `${cleanName} Initial Session`, cwd: newWorkspaceDir };
+    }
+    const content = sliced.map((e) => JSON.stringify(e)).join('\n') + '\n';
+    await atomicWriteText(targetSessionFile, content);
+    return { ok: true, projectName: cleanName, workspacePath: newWorkspaceDir, sessionPath: targetSessionFile };
+  } catch (error) {
+    if (copyWorkspace) {
+      await fs.rm(newWorkspaceDir, { recursive: true, force: true }).catch(() => {});
+      if (targetExisted) await fs.mkdir(newWorkspaceDir, { recursive: true }).catch(() => {});
+    }
+    throw error;
   }
-
-  const content = sliced.map((e) => JSON.stringify(e)).join('\n') + '\n';
-  await fs.writeFile(targetSessionFile, content, 'utf8');
-
-  return {
-    ok: true,
-    projectName: cleanName,
-    workspacePath: newWorkspaceDir,
-    sessionPath: targetSessionFile
-  };
 }

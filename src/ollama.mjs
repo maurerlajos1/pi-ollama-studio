@@ -1,11 +1,91 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { APP_DIR, PI_MODELS_PATH, readConfig, readJson, writeJsonAtomic } from './config.mjs';
+import crypto from 'node:crypto';
+import { APP_DIR, PI_MODELS_PATH, readConfig, readJson, readJsonStrict, serializeMutation, writeJsonAtomic } from './config.mjs';
 
 const PROFILE_PATH = path.join(APP_DIR, 'profiles.json');
 
 function normalizedBase(baseUrl) {
-  return String(baseUrl || '').replace(/\/+$/, '');
+  return String(baseUrl || '').trim().replace(/\/+$/, '');
+}
+
+
+export function ollamaRuntimeIdentity(config) {
+  const baseUrl = normalizedBase(config?.ollamaBaseUrl || '');
+  return {
+    id: `ollama-${crypto.createHash('sha256').update(baseUrl).digest('hex').slice(0, 12)}`,
+    baseUrl,
+    name: String(config?.ollamaRuntimeName || 'Ollama'),
+    kind: String(config?.ollamaRuntimeKind || 'local')
+  };
+}
+
+export function profileRuntimeCompatibility(profile, config) {
+  const runtime = ollamaRuntimeIdentity(config);
+  const boundUrl = normalizedBase(profile?.runtime?.baseUrl || profile?.runtimeBaseUrl || '');
+  const boundId = String(profile?.runtime?.id || profile?.runtimeId || '');
+  if (!boundUrl && !boundId) return { compatible: true, portable: true, runtime };
+  return { compatible: (boundUrl && boundUrl === runtime.baseUrl) || (boundId && boundId === runtime.id), portable: false, runtime };
+}
+
+function modelAliases(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return new Set();
+  const aliases = new Set([raw]);
+  if (raw.endsWith(':latest')) aliases.add(raw.slice(0, -7));
+  else aliases.add(`${raw}:latest`);
+  return aliases;
+}
+
+function aliasesOverlap(a, b) {
+  const right = b instanceof Set ? b : modelAliases(b);
+  for (const value of (a instanceof Set ? a : modelAliases(a))) if (right.has(value)) return true;
+  return false;
+}
+
+function profileStorageKey(profile) {
+  const id = String(profile?.id || profile?.name || '').trim().toLowerCase();
+  const boundUrl = normalizedBase(profile?.runtime?.baseUrl || profile?.runtimeBaseUrl || '').toLowerCase();
+  const boundId = String(profile?.runtime?.id || profile?.runtimeId || '').trim().toLowerCase();
+  return `${id}::runtime::${boundUrl ? `url:${boundUrl}` : boundId ? `id:${boundId}` : 'portable'}`;
+}
+
+function profilesForRuntime(profiles, config) {
+  const selected = new Map();
+  for (const profile of Array.isArray(profiles) ? profiles : []) {
+    const id = String(profile?.id || '').trim();
+    if (!id) continue;
+    const compatibility = profileRuntimeCompatibility(profile, config);
+    if (!compatibility.compatible) continue;
+    const key = id.toLowerCase();
+    const score = compatibility.portable ? 1 : 2;
+    const current = selected.get(key);
+    if (!current || score > current.score) selected.set(key, { profile, score });
+  }
+  return [...selected.values()].map((item) => item.profile);
+}
+export function normalizeOllamaOpenAiBaseUrl(baseUrl) {
+  const base = normalizedBase(baseUrl);
+  return /\/v1$/i.test(base) ? base : `${base}/v1`;
+}
+
+function ollamaHeaders(cfg, includeJson = false) {
+  const headers = {};
+  if (includeJson) headers['content-type'] = 'application/json';
+  const envName = String(cfg?.ollamaApiKeyEnv || '').trim();
+  const apiKey = envName ? process.env[envName] : '';
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  return Object.keys(headers).length ? headers : undefined;
+}
+
+export function isLocalOllamaBaseUrl(baseUrl) {
+  try {
+    const url = new URL(String(baseUrl || ''));
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    return false;
+  }
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
@@ -28,11 +108,10 @@ async function parseError(response) {
   }
 }
 
-export async function ollamaJson(apiPath, { method = 'GET', body, timeoutMs = 30000 } = {}) {
-  const cfg = await readConfig();
+async function ollamaJsonWithConfig(cfg, apiPath, { method = 'GET', body, timeoutMs = 30000 } = {}) {
   const response = await fetchWithTimeout(`${normalizedBase(cfg.ollamaBaseUrl)}${apiPath}`, {
     method,
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    headers: ollamaHeaders(cfg, body !== undefined),
     body: body === undefined ? undefined : JSON.stringify(body)
   }, timeoutMs);
   if (!response.ok) throw new Error(await parseError(response));
@@ -40,66 +119,111 @@ export async function ollamaJson(apiPath, { method = 'GET', body, timeoutMs = 30
   return text ? JSON.parse(text) : {};
 }
 
-export async function ollamaStream(apiPath, body, onEvent = null, timeoutMs = 24 * 60 * 60 * 1000) {
+export async function ollamaJson(apiPath, options = {}) {
   const cfg = await readConfig();
-  const response = await fetchWithTimeout(`${normalizedBase(cfg.ollamaBaseUrl)}${apiPath}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ...body, stream: true })
-  }, timeoutMs);
-  if (!response.ok) throw new Error(await parseError(response));
-  if (!response.body) return [];
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  const events = [];
-  const collect = typeof onEvent !== 'function';
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    let index;
-    while ((index = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      if (!line) continue;
-      let event;
-      try { event = JSON.parse(line); } catch { event = { status: line }; }
-      if (collect) events.push(event);
-      if (typeof onEvent === 'function') onEvent(event);
-      if (event.error) throw new Error(event.error);
-    }
-    if (done) break;
-  }
-  if (buffer.trim()) {
-    let event;
-    try { event = JSON.parse(buffer.trim()); } catch { event = { status: buffer.trim() }; }
-    if (collect) events.push(event);
-    if (typeof onEvent === 'function') onEvent(event);
-    if (event.error) throw new Error(event.error);
-  }
-  return events;
+  return ollamaJsonWithConfig(cfg, apiPath, options);
 }
 
-let lastKnownModels = [];
-
-export async function getOllamaStatus() {
+export async function probeOllamaRuntime(input = {}) {
+  const current = await readConfig();
+  const cfg = {
+    ...current,
+    ollamaBaseUrl: String(input.ollamaBaseUrl || current.ollamaBaseUrl || '').trim(),
+    ollamaApiKeyEnv: String(input.ollamaApiKeyEnv ?? current.ollamaApiKeyEnv ?? '').trim(),
+    ollamaRuntimeKind: String(input.ollamaRuntimeKind || current.ollamaRuntimeKind || 'local').trim(),
+    ollamaRuntimeName: String(input.ollamaRuntimeName || current.ollamaRuntimeName || 'Ollama').trim()
+  };
+  if (!/^https?:\/\//i.test(cfg.ollamaBaseUrl)) throw Object.assign(new Error('Ollama Base URL must use http:// or https://'), { statusCode: 400 });
+  const started = Date.now();
   const [version, tags, ps] = await Promise.allSettled([
-    ollamaJson('/api/version', { timeoutMs: 3500 }),
-    ollamaJson('/api/tags', { timeoutMs: 5000 }),
-    ollamaJson('/api/ps', { timeoutMs: 5000 })
+    ollamaJsonWithConfig(cfg, '/api/version', { timeoutMs: 6000 }),
+    ollamaJsonWithConfig(cfg, '/api/tags', { timeoutMs: 8000 }),
+    ollamaJsonWithConfig(cfg, '/api/ps', { timeoutMs: 8000 })
   ]);
   const online = version.status === 'fulfilled' || tags.status === 'fulfilled';
-  if (tags.status === 'fulfilled' && Array.isArray(tags.value?.models) && tags.value.models.length > 0) {
-    lastKnownModels = tags.value.models;
+  if (!online) {
+    const errors = [version, tags].filter((item) => item.status === 'rejected').map((item) => item.reason?.message || String(item.reason));
+    throw Object.assign(new Error(errors[0] || 'Unable to reach Ollama runtime'), { statusCode: 502, details: errors });
+  }
+  return {
+    online: true,
+    latencyMs: Date.now() - started,
+    version: version.status === 'fulfilled' ? version.value?.version || null : null,
+    modelCount: tags.status === 'fulfilled' && Array.isArray(tags.value?.models) ? tags.value.models.length : null,
+    models: tags.status === 'fulfilled' && Array.isArray(tags.value?.models) ? tags.value.models : [],
+    running: ps.status === 'fulfilled' && Array.isArray(ps.value?.models) ? ps.value.models : [],
+    modelsAvailable: tags.status === 'fulfilled' && Array.isArray(tags.value?.models),
+    runningAvailable: ps.status === 'fulfilled' && Array.isArray(ps.value?.models),
+    runtime: {
+      ...ollamaRuntimeIdentity(cfg),
+      local: isLocalOllamaBaseUrl(cfg.ollamaBaseUrl), authenticated: Boolean(cfg.ollamaApiKeyEnv),
+      apiKeyEnv: cfg.ollamaApiKeyEnv || null, apiKeyAvailable: Boolean(cfg.ollamaApiKeyEnv && process.env[cfg.ollamaApiKeyEnv])
+    }
+  };
+}
+
+export async function ollamaStream(apiPath, body, onEvent = null, timeoutMs = 24 * 60 * 60 * 1000) {
+  const cfg = await readConfig();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`Request timed out after ${timeoutMs}ms`)), timeoutMs);
+  let reader = null;
+  try {
+    const response = await fetch(`${normalizedBase(cfg.ollamaBaseUrl)}${apiPath}`, {
+      method: 'POST', headers: ollamaHeaders(cfg, true), body: JSON.stringify({ ...body, stream: true }), signal: controller.signal
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    if (!response.body) return [];
+    reader = response.body.getReader();
+    const decoder = new TextDecoder(); let buffer=''; const events=[]; const collect=typeof onEvent !== 'function';
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      let index; while ((index=buffer.indexOf('\n'))>=0) {
+        const line=buffer.slice(0,index).trim(); buffer=buffer.slice(index+1); if(!line)continue;
+        let event; try{event=JSON.parse(line);}catch{event={status:line};}
+        if(collect)events.push(event); if(typeof onEvent==='function')onEvent(event); if(event.error)throw new Error(event.error);
+      }
+      if(done)break;
+    }
+    if(buffer.trim()) { let event; try{event=JSON.parse(buffer.trim());}catch{event={status:buffer.trim()};} if(collect)events.push(event); if(typeof onEvent==='function')onEvent(event); if(event.error)throw new Error(event.error); }
+    return events;
+  } catch (error) {
+    if (controller.signal.aborted && !/timed out/i.test(String(error?.message||''))) throw new Error(`Request timed out after ${timeoutMs}ms`);
+    throw error;
+  } finally {
+    clearTimeout(timer); if (reader) await reader.cancel().catch(()=>{});
+  }
+}
+
+let lastKnownModelsByRuntime = new Map();
+
+export async function getOllamaStatus(configOverride = null) {
+  const stored = await readConfig();
+  const cfg = configOverride ? { ...stored, ...configOverride } : stored;
+  const runtimeKey = normalizedBase(cfg.ollamaBaseUrl);
+  const [version, tags, ps] = await Promise.allSettled([
+    ollamaJsonWithConfig(cfg, '/api/version', { timeoutMs: 3500 }),
+    ollamaJsonWithConfig(cfg, '/api/tags', { timeoutMs: 5000 }),
+    ollamaJsonWithConfig(cfg, '/api/ps', { timeoutMs: 5000 })
+  ]);
+  const online = version.status === 'fulfilled' || tags.status === 'fulfilled';
+  if (tags.status === 'fulfilled' && Array.isArray(tags.value?.models)) {
+    lastKnownModelsByRuntime.set(runtimeKey, tags.value.models);
   }
   return {
     online,
-    modelsAvailable: tags.status === 'fulfilled',
-    runningAvailable: ps.status === 'fulfilled',
+    runtime: {
+      ...ollamaRuntimeIdentity(cfg),
+      local: isLocalOllamaBaseUrl(cfg.ollamaBaseUrl),
+      authenticated: Boolean(cfg.ollamaApiKeyEnv),
+      apiKeyEnv: cfg.ollamaApiKeyEnv || null,
+      apiKeyAvailable: Boolean(cfg.ollamaApiKeyEnv && process.env[cfg.ollamaApiKeyEnv])
+    },
+    modelsAvailable: tags.status === 'fulfilled' && Array.isArray(tags.value?.models),
+    runningAvailable: ps.status === 'fulfilled' && Array.isArray(ps.value?.models),
     version: version.status === 'fulfilled' ? version.value.version : null,
-    models: tags.status === 'fulfilled' ? (tags.value.models || []) : lastKnownModels,
-    running: ps.status === 'fulfilled' ? (ps.value.models || []) : [],
+    models: tags.status === 'fulfilled' && Array.isArray(tags.value?.models) ? tags.value.models : (lastKnownModelsByRuntime.get(runtimeKey) || []),
+    running: ps.status === 'fulfilled' && Array.isArray(ps.value?.models) ? ps.value.models : [],
     errors: [version, tags, ps].filter((item) => item.status === 'rejected').map((item) => item.reason?.message || String(item.reason))
   };
 }
@@ -115,8 +239,11 @@ export async function loadProfiles() {
 
 export async function saveProfiles(value) {
   const normalized = { profiles: Array.isArray(value?.profiles) ? value.profiles : [] };
-  await writeJsonAtomic(PROFILE_PATH, normalized);
-  return normalized;
+  return serializeMutation(PROFILE_PATH, async()=>{await readJsonStrict(PROFILE_PATH,{profiles:[]});await writeJsonAtomic(PROFILE_PATH, normalized);return normalized;});
+}
+
+async function mutateProfiles(mutator) {
+  return serializeMutation(PROFILE_PATH, async()=>{const raw=await readJsonStrict(PROFILE_PATH,{profiles:[]});const current={profiles:Array.isArray(raw?.profiles)?raw.profiles:[]};const next=await mutator(current)||current;const normalized={profiles:Array.isArray(next?.profiles)?next.profiles:[]};await writeJsonAtomic(PROFILE_PATH,normalized);return normalized;});
 }
 
 function sanitizeModelName(value) {
@@ -138,6 +265,7 @@ function numeric(value, fallback, min, max) {
 }
 
 export async function createModelProfile(input, onEvent = () => {}) {
+  const cfg = await readConfig();
   const baseModel = String(input?.baseModel || '').trim();
   if (!baseModel) throw new Error('Base model is required');
   const model = sanitizeModelName(input?.name || `${baseModel.split(':')[0]}-studio-${input?.contextWindow || 32768}`);
@@ -177,7 +305,6 @@ export async function createModelProfile(input, onEvent = () => {}) {
 
   await ollamaStream('/api/create', modelfilePayload, onEvent);
 
-  const profiles = await loadProfiles();
   const profile = {
     id: model,
     name: String(input?.displayName || model),
@@ -187,11 +314,17 @@ export async function createModelProfile(input, onEvent = () => {}) {
     reasoning: Boolean(input?.reasoning),
     input: input?.vision ? ['text', 'image'] : ['text'],
     parameters,
+    runtime: ollamaRuntimeIdentity(cfg),
+    portable: Boolean(input?.portable),
     createdAt: new Date().toISOString()
   };
-  profiles.profiles = profiles.profiles.filter((item) => item.id !== model);
-  profiles.profiles.push(profile);
-  await saveProfiles(profiles);
+  if (profile.portable) delete profile.runtime;
+  await mutateProfiles((profiles) => {
+    const key = profileStorageKey(profile);
+    profiles.profiles = profiles.profiles.filter((item) => profileStorageKey(item) !== key);
+    profiles.profiles.push(profile);
+    return profiles;
+  });
   await syncPiModels({ extraProfiles: [profile] });
   return profile;
 }
@@ -205,35 +338,43 @@ export async function pullModel(model, onEvent = () => {}) {
 export async function deleteModel(model) {
   const value = String(model || '').trim();
   if (!value) throw new Error('Model is required');
+  const cfg = await readConfig();
   const result = await ollamaJson('/api/delete', { method: 'DELETE', body: { model: value }, timeoutMs: 120000 });
-  const profiles = await loadProfiles();
-  profiles.profiles = profiles.profiles.filter((item) => item.id !== value);
-  await saveProfiles(profiles);
+  await mutateProfiles((profiles) => {
+    profiles.profiles = profiles.profiles.filter((item) => {
+      if (!aliasesOverlap(item?.id, value)) return true;
+      const compatibility = profileRuntimeCompatibility(item, cfg);
+      // Deleting a model is endpoint-local. Keep portable/legacy profiles and
+      // profiles owned by another Ollama runtime.
+      return compatibility.portable || !compatibility.compatible;
+    });
+    return profiles;
+  });
   await removePiModel(value);
   return result;
 }
 
-export async function unloadModel(targetModel) {
+export async function unloadModel(targetModel, { request = ollamaJson } = {}) {
   const value = String(targetModel || '').trim();
   if (value) {
-    await ollamaJson('/api/generate', {
+    await request('/api/generate', {
       method: 'POST',
       body: { model: value, prompt: '', keep_alive: 0, stream: false },
       timeoutMs: 30000
-    }).catch(() => {});
+    });
     return { ok: true, unloaded: [value] };
   }
-  const ps = await ollamaJson('/api/ps', { timeoutMs: 5000 }).catch(() => ({ models: [] }));
-  const running = ps.models || [];
+  const ps = await request('/api/ps', { timeoutMs: 5000 });
+  const running = Array.isArray(ps?.models) ? ps.models : [];
   const unloaded = [];
   for (const item of running) {
     const name = item.model || item.name;
     if (name) {
-      await ollamaJson('/api/generate', {
+      await request('/api/generate', {
         method: 'POST',
         body: { model: name, prompt: '', keep_alive: 0, stream: false },
         timeoutMs: 30000
-      }).catch(() => {});
+      });
       unloaded.push(name);
     }
   }
@@ -330,60 +471,129 @@ export async function syncPiModels({ extraProfiles = [] } = {}) {
   const cfg = await readConfig();
   const status = await getOllamaStatus();
   const stored = await loadProfiles();
-  const profiles = [...stored.profiles, ...extraProfiles];
-  const profileMap = new Map(profiles.map((item) => [item.id, item]));
-  const current = await readJson(PI_MODELS_PATH, { providers: {} });
-  if (!current.providers || typeof current.providers !== 'object') current.providers = {};
-  const existingProvider = current.providers.ollama || {};
-  const existingModels = Array.isArray(existingProvider.models) ? existingProvider.models : [];
-  const installedIds = new Set(status.models.map((item) => item.model || item.name).filter(Boolean));
-  const retainedModels = status.modelsAvailable ? existingModels.filter((item) => installedIds.has(item.id)) : existingModels;
-  const existingMap = new Map(retainedModels.map((item) => [item.id, item]));
-
-  for (const item of status.models) {
-    const id = item.model || item.name;
-    if (!id) continue;
-    const profile = profileMap.get(id);
-    const prior = existingMap.get(id) || {};
-    const rawInput = profile?.input || prior.input || ['text'];
-    const input = Array.isArray(rawInput)
-      ? rawInput.map(String)
-      : typeof rawInput === 'string'
-        ? rawInput.split(/\s+/).filter(Boolean)
-        : ['text'];
-    existingMap.set(id, {
-      ...prior,
-      id,
-      name: profile?.name || prior.name || id,
-      reasoning: profile?.reasoning ?? prior.reasoning ?? /qwen3|deepseek|reason|thinking/i.test(id),
-      input,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...(prior.cost || {}) },
-      contextWindow: profile?.contextWindow || prior.contextWindow || cfg.defaultContextLength,
-      maxTokens: profile?.maxTokens || prior.maxTokens || Math.min(8192, cfg.defaultContextLength)
-    });
+  const latestCfg = await readConfig();
+  if (normalizedBase(latestCfg.ollamaBaseUrl) !== normalizedBase(cfg.ollamaBaseUrl)) {
+    throw Object.assign(new Error('Ollama runtime changed while models were refreshing'), { statusCode: 409, code: 'OLLAMA_RUNTIME_STALE' });
   }
 
-  current.providers.ollama = {
-    ...existingProvider,
-    baseUrl: `${normalizedBase(cfg.ollamaBaseUrl)}/v1`,
-    api: 'openai-completions',
-    apiKey: 'ollama',
-    compat: {
-      supportsDeveloperRole: false,
-      supportsReasoningEffort: false
-    },
-    models: [...existingMap.values()].sort((a, b) => a.id.localeCompare(b.id))
+  // Resolve duplicate profile IDs deterministically: a profile bound to the
+  // current runtime wins; a portable/legacy profile is only a fallback.
+  const profiles = profilesForRuntime([...(stored.profiles || []), ...extraProfiles], cfg);
+  const profileByAlias = new Map();
+  for (const profile of profiles) {
+    for (const alias of modelAliases(profile.id)) profileByAlias.set(alias, profile);
+  }
+  const installedAliases = new Set();
+  for (const item of status.models || []) {
+    const id = item?.model || item?.name;
+    for (const alias of modelAliases(id)) installedAliases.add(alias);
+  }
+  const profileForModel = (id) => {
+    for (const alias of modelAliases(id)) if (profileByAlias.has(alias)) return profileByAlias.get(alias);
+    return null;
   };
-  await writeJsonAtomic(PI_MODELS_PATH, current);
-  return current.providers.ollama;
+  const profileInstalled = (profile) => {
+    if (!status.modelsAvailable) return true;
+    for (const alias of modelAliases(profile?.id)) if (installedAliases.has(alias)) return true;
+    return false;
+  };
+
+  return serializeMutation(PI_MODELS_PATH, async () => {
+    const commitCfg = await readConfig();
+    if (normalizedBase(commitCfg.ollamaBaseUrl) !== normalizedBase(cfg.ollamaBaseUrl)) {
+      throw Object.assign(new Error('Ollama runtime changed while models were refreshing'), { statusCode: 409, code: 'OLLAMA_RUNTIME_STALE' });
+    }
+    const current = await readJsonStrict(PI_MODELS_PATH, { providers: {} });
+    if (!current.providers || typeof current.providers !== 'object') current.providers = {};
+    const existingProvider = current.providers.ollama || {};
+    const existingModels = Array.isArray(existingProvider.models) ? existingProvider.models : [];
+    const retainedModels = status.modelsAvailable
+      ? existingModels.filter((item) => [...modelAliases(item.id)].some((alias) => installedAliases.has(alias)))
+      : existingModels;
+    const existingMap = new Map(retainedModels.map((item) => [item.id, item]));
+
+    for (const item of status.models || []) {
+      const id = String(item?.model || item?.name || '').trim();
+      if (!id) continue;
+      const profile = profileForModel(id);
+      const prior = existingMap.get(id) || {};
+      const rawInput = profile?.input || prior.input || ['text'];
+      const input = Array.isArray(rawInput) ? rawInput.map(String) : typeof rawInput === 'string' ? rawInput.split(/\s+/).filter(Boolean) : ['text'];
+      const entry = {
+        ...prior,
+        id,
+        name: profile?.name || prior.name || id,
+        reasoning: typeof profile?.reasoning === 'boolean' ? profile.reasoning : (typeof prior?.reasoning === 'boolean' ? prior.reasoning : /qwen3|deepseek|reason|thinking/i.test(id)),
+        input,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...(prior.cost || {}) },
+        contextWindow: profile?.contextWindow || prior.contextWindow || cfg.defaultContextLength,
+        maxTokens: profile?.maxTokens || prior.maxTokens || Math.min(8192, cfg.defaultContextLength)
+      };
+      existingMap.set(id, entry);
+      if (id.toLowerCase().endsWith(':latest')) {
+        const shortId = id.slice(0, -7);
+        existingMap.set(shortId, { ...entry, id: shortId });
+      }
+    }
+
+    // Offline mode retains saved declarations, but when the runtime inventory is
+    // available never advertise a Studio profile whose derived model is absent.
+    for (const profile of profiles) {
+      const id = String(profile.id || '').trim();
+      if (!id || !profileInstalled(profile)) continue;
+      const prior = existingMap.get(id) || {};
+      const rawInput = profile.input || prior.input || ['text'];
+      const input = Array.isArray(rawInput) ? rawInput.map(String) : ['text'];
+      existingMap.set(id, {
+        ...prior,
+        id,
+        name: profile.name || id,
+        reasoning: typeof profile.reasoning === 'boolean' ? profile.reasoning : (typeof prior.reasoning === 'boolean' ? prior.reasoning : true),
+        input,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...(prior.cost || {}) },
+        contextWindow: profile.contextWindow || prior.contextWindow || cfg.defaultContextLength,
+        maxTokens: profile.maxTokens || prior.maxTokens || Math.min(8192, cfg.defaultContextLength)
+      });
+    }
+
+    current.providers.ollama = {
+      ...existingProvider,
+      baseUrl: normalizeOllamaOpenAiBaseUrl(cfg.ollamaBaseUrl),
+      api: 'openai-completions',
+      apiKey: cfg.ollamaApiKeyEnv ? `$${cfg.ollamaApiKeyEnv}` : 'ollama',
+      compat: { supportsDeveloperRole: false, supportsReasoningEffort: true },
+      models: [...existingMap.values()].sort((a, b) => a.id.localeCompare(b.id))
+    };
+    await writeJsonAtomic(PI_MODELS_PATH, current);
+    return current.providers.ollama;
+  });
 }
 
-export async function removePiModel(model) {
-  const current = await readJson(PI_MODELS_PATH, { providers: {} });
-  const provider = current.providers?.ollama;
-  if (!provider || !Array.isArray(provider.models)) return;
-  provider.models = provider.models.filter((item) => item.id !== model);
-  await writeJsonAtomic(PI_MODELS_PATH, current);
+export async function removePiModel(model) { return serializeMutation(PI_MODELS_PATH,async()=>{const current=await readJsonStrict(PI_MODELS_PATH,{providers:{}});const provider=current.providers?.ollama;if(!provider||!Array.isArray(provider.models))return;provider.models=provider.models.filter((item)=>item.id!==model);await writeJsonAtomic(PI_MODELS_PATH,current);}); }
+
+export async function setModelReasoning(modelId, reasoningEnabled) {
+  if (!modelId) return;
+  const cleanId = String(modelId).startsWith('ollama/') ? String(modelId).slice(7) : String(modelId);
+  const targetAliases = modelAliases(cleanId);
+  const matches = (value) => aliasesOverlap(modelAliases(value), targetAliases);
+  await serializeMutation(PI_MODELS_PATH, async () => {
+    const current = await readJsonStrict(PI_MODELS_PATH, { providers: {} });
+    const provider = current.providers?.ollama;
+    if (provider && Array.isArray(provider.models)) {
+      for (const item of provider.models) {
+        if (matches(item.id) || matches(item.name)) item.reasoning = Boolean(reasoningEnabled);
+      }
+      await writeJsonAtomic(PI_MODELS_PATH, current);
+    }
+  });
+  await mutateProfiles((stored) => {
+    for (const profile of stored.profiles || []) {
+      // Do not use baseModel or fuzzy substring matching: changing reasoning for
+      // qwen must not mutate every derived profile that happens to use qwen.
+      if (matches(profile.id) || matches(profile.name)) profile.reasoning = Boolean(reasoningEnabled);
+    }
+    return stored;
+  });
 }
 
 export async function modelDiagnostics(model, contextLength, kvType, parallel) {
@@ -397,3 +607,5 @@ export async function modelDiagnostics(model, contextLength, kvType, parallel) {
     running: status.running.find((item) => (item.model || item.name) === model) || null
   };
 }
+
+export const __test = { modelAliases, aliasesOverlap, profileStorageKey, profilesForRuntime };

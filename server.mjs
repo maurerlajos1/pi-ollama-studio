@@ -1,11 +1,12 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
 import { PiRpcProcess } from './src/pi-rpc.mjs';
-import { readConfig, writeConfig } from './src/config.mjs';
+import { readConfig, writeConfig, serializeMutation } from './src/config.mjs';
 import {
   createModelProfile,
   deleteModel,
@@ -13,24 +14,63 @@ import {
   loadProfiles,
   modelDiagnostics,
   pullModel,
+  setModelReasoning,
   showModel,
   syncPiModels,
-  unloadModel
+  unloadModel,
+  isLocalOllamaBaseUrl,
+  probeOllamaRuntime
 } from './src/ollama.mjs';
-import { cloneSession, createProjectFromNode, forkSession, inspectSession, listSessions } from './src/sessions.mjs';
-import { browseDirectory, createDirectory, getGitStatus, getSystemStatus, gitCommit, gitDiff, gitStage, ManagedOllama, openNativeFolderPicker } from './src/system.mjs';
-import { isLoopbackHost } from './src/config.mjs';
+import { cloneSession, createProjectFromNode, forkSession, inspectSession, listSessions, sanitizeProjectDirectoryName } from './src/sessions.mjs';
+import { browseDirectory, createDirectory, createNewProject, getGitStatus, getSystemStatus, gitCommit, gitCreateSnapshot, gitCreateWorktree, gitRemoveWorktree, gitDiff, gitInitializeRepository, gitReadFileVersion, gitRestoreFile, gitStage, ManagedOllama, openNativeFolderPicker, searchWorkspace } from './src/system.mjs';
+import { isLoopbackHost, studioLoopbackUrl } from './src/config.mjs';
+import { getCheckpoint, listCheckpoints, recordCheckpoint } from './src/checkpoints.mjs';
+import { LspManager, languageIdForPath } from './src/lsp.mjs';
+import { TerminalManager } from './src/terminal.mjs';
+import { discoverTests, runTests, discoverRunConfigurations } from './src/testing.mjs';
+import { inspectPiPlatform, writeContextFile, writePiSettings, writePromptTemplate, writeSkill } from './src/pi-platform.mjs';
+import { loadProviderProfiles, providerPublicView, syncProvidersToPi } from './src/providers.mjs';
+import { createProviderRoutes } from './src/routes/provider-routes.mjs';
+import { createTestingRoutes } from './src/routes/testing-routes.mjs';
+import { createPiPlatformRoutes } from './src/routes/pi-platform-routes.mjs';
+import { McpManager, ensureMcpPiBridge } from './src/mcp.mjs';
+import { createMcpRoutes } from './src/routes/mcp-routes.mjs';
+import { searchPiPackages, fetchPackageDetails, runPiPackageAction, configurePackageResources, inspectPackageSource } from './src/pi-packages.mjs';
+import { createPackageRoutes } from './src/routes/package-routes.mjs';
+import { PreviewManager, loadPreviewConfig, savePreviewConfig, suggestPreviewCommand } from './src/preview.mjs';
+import { createPreviewRoutes } from './src/routes/preview-routes.mjs';
+import { createOllamaRoutes } from './src/routes/ollama-routes.mjs';
+import { createTtsRoutes } from './src/routes/tts-routes.mjs';
+import { terminateProcessTree } from './src/process-tree.mjs';
+import { composeHarnessSystemPrompt, listHarnesses, resolveHarness, saveHarness, deleteHarness } from './src/harnesses.mjs';
+import { ensureOllamaRuntimeForPi } from './src/ollama-lifecycle.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const MONACO_DIR = path.join(__dirname, 'vendor', 'monaco');
+const LSP_RUNTIME_DIR = path.join(__dirname, 'vendor', 'lsp-runtime');
+const XTERM_DIR = path.join(__dirname, 'vendor', 'xterm');
 const PACKAGE = JSON.parse(await fs.readFile(path.join(__dirname, 'package.json'), 'utf8'));
+const TTS_EXTENSION_PATH = path.join(__dirname, 'extensions', 'pi-ollama-studio-tts.ts');
 const BODY_LIMIT = 25 * 1024 * 1024;
 const pi = new PiRpcProcess();
 const managedOllama = new ManagedOllama();
+const lsp = new LspManager({ runtimeDir: LSP_RUNTIME_DIR, clientVersion: PACKAGE.version });
+const terminals = new TerminalManager();
+const mcp = new McpManager();
+const previews = new PreviewManager();
+previews.on('changed', (preview) => sendEvent('preview_changed', { workspace: preview.workspace, action: 'state', preview }));
 const sseClients = new Set();
 const terminalSessions = new Map();
+const desktopTerminalProcesses = new Map();
+// NTFS can report the same mtimeMs for edits made inside one timestamp bucket.
+// Keep the revision observed by the editor-read route so same-mtime external
+// edits cannot silently bypass optimistic-save protection.
+const workspaceFileRevisions = new Map();
+const MAX_WORKSPACE_FILE_REVISIONS = 2048;
 let piCommandsInFlight = 0;
 const PI_COMMAND_CONCURRENCY_LIMIT = 8;
+const PI_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const state = {
   piState: null,
   piStats: null,
@@ -38,6 +78,25 @@ const state = {
   lastError: null,
   startedAt: new Date().toISOString()
 };
+
+function fileContentHash(content) {
+  return crypto.createHash('sha256').update(String(content), 'utf8').digest('hex');
+}
+
+function rememberWorkspaceFileRevision(target, revision) {
+  workspaceFileRevisions.set(target, revision);
+  while (workspaceFileRevisions.size > MAX_WORKSPACE_FILE_REVISIONS) {
+    const oldest = workspaceFileRevisions.keys().next().value;
+    if (oldest === undefined) break;
+    workspaceFileRevisions.delete(oldest);
+  }
+}
+
+async function readWorkspaceFileRevision(target, stat = null) {
+  const fileStat = stat || await fs.stat(target);
+  const content = await fs.readFile(target, 'utf8');
+  return { mtimeMs: fileStat.mtimeMs, size: fileStat.size, hash: fileContentHash(content) };
+}
 
 function json(res, status, value) {
   const payload = JSON.stringify(value);
@@ -53,12 +112,15 @@ function setSecurityHeaders(res) {
   res.setHeader('x-content-type-options', 'nosniff');
   res.setHeader('referrer-policy', 'no-referrer');
   res.setHeader('permissions-policy', 'camera=(), microphone=(), geolocation=()');
-  res.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+  res.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-src 'self' http://127.0.0.1:* http://localhost:* https://127.0.0.1:* https://localhost:*; frame-ancestors 'none'");
 }
 
 function errorJson(res, status, error) {
   const message = error instanceof Error ? error.message : String(error);
-  json(res, status, { ok: false, error: message });
+  const payload = { ok: false, error: message };
+  if (error?.code) payload.code = error.code;
+  if (error?.details !== undefined) payload.details = error.details;
+  json(res, status, payload);
 }
 
 async function readBody(req) {
@@ -82,13 +144,15 @@ function sendEvent(event, data) {
   }
 }
 
+function safeDecode(value) { try { return decodeURIComponent(value); } catch { throw Object.assign(new Error('Malformed URL encoding'), { statusCode: 400 }); } }
+
 function routeMatch(pathname, pattern) {
   const patternParts = pattern.split('/').filter(Boolean);
   const pathParts = pathname.split('/').filter(Boolean);
   if (patternParts.length !== pathParts.length) return null;
   const params = {};
   for (let i = 0; i < patternParts.length; i += 1) {
-    if (patternParts[i].startsWith(':')) params[patternParts[i].slice(1)] = decodeURIComponent(pathParts[i]);
+    if (patternParts[i].startsWith(':')) params[patternParts[i].slice(1)] = safeDecode(pathParts[i]);
     else if (patternParts[i] !== pathParts[i]) return null;
   }
   return params;
@@ -187,15 +251,18 @@ async function refreshPiSnapshot() {
 
 pi.on('event', (event) => {
   state.lastPiEvent = event;
-  sendEvent('pi_event', event);
+  sendEvent('pi_event', { ...event, _studioWorkspace: pi.status().workspace || '' });
   if (['agent_settled', 'message_end', 'compaction_end', 'queue_update'].includes(event?.type)) {
     setTimeout(refreshPiSnapshot, 25).unref?.();
   }
 });
-pi.on('stderr', (text) => sendEvent('pi_stderr', { text }));
+pi.on('stderr', (text) => sendEvent('pi_stderr', { text, workspace: pi.status().workspace || '' }));
 pi.on('protocol-error', (payload) => sendEvent('pi_protocol_error', payload));
 pi.on('started', (payload) => sendEvent('pi_status', payload));
 pi.on('exit', (payload) => {
+  // A delayed exit from a replaced Pi child must not erase the replacement's
+  // cached session/stats or broadcast a misleading stop transition.
+  if (payload?.stale) return;
   state.piState = null;
   state.piStats = null;
   sendEvent('pi_status', { ...pi.status(), exit: payload });
@@ -207,14 +274,29 @@ pi.on('error', (error) => {
 managedOllama.on('log', (record) => sendEvent('ollama_log', record));
 managedOllama.on('exit', (payload) => sendEvent('ollama_managed_status', { ...managedOllama.status(), exit: payload }));
 managedOllama.on('error', (error) => sendEvent('server_error', { source: 'managed_ollama', error: error.message }));
+terminals.on('data', (payload) => sendEvent('terminal_data', { ...payload, workspace: terminals.get(payload.id)?.workspace || '' }));
+terminals.on('exit', (payload) => sendEvent('terminal_exit', { ...payload, workspace: terminals.get(payload.id)?.workspace || '' }));
+terminals.on('created', (payload) => sendEvent('terminal_created', payload));
+terminals.on('removed', (payload) => sendEvent('terminal_removed', payload));
+lsp.on('diagnostics', (payload) => sendEvent('lsp_diagnostics', payload));
+lsp.on('status', (payload) => sendEvent('lsp_status', payload));
+lsp.on('log', (payload) => sendEvent('lsp_log', payload));
+lsp.on('protocol-error', (payload) => sendEvent('lsp_protocol_error', payload));
+lsp.on('error', (payload) => sendEvent('server_error', { source: `lsp:${payload.serverId || 'unknown'}`, workspace: payload.workspace || '', error: payload.error?.message || String(payload.error || 'Language server error') }));
+mcp.on('log', (payload) => sendEvent('mcp_log', payload));
+mcp.on('status', (payload) => sendEvent('mcp_status', payload));
+mcp.on('changed', (payload) => sendEvent('mcp_changed', payload));
 
 async function bootstrap() {
   const config = await readConfig();
-  const [system, ollama, profiles, piSnapshot] = await Promise.all([
+  const [system, ollama, profiles, piSnapshot, providers, mcpSnapshot, harnessSnapshot] = await Promise.all([
     getSystemStatus(),
     getOllamaStatus(),
     loadProfiles(),
-    getPiSnapshot()
+    getPiSnapshot(),
+    loadProviderProfiles(),
+    mcp.snapshot(),
+    listHarnesses({ workspace: config.defaultWorkspace })
   ]);
   return {
     ok: true,
@@ -222,14 +304,36 @@ async function bootstrap() {
     system,
     ollama,
     profiles: profiles.profiles,
+    providers: providers.providers.map((item) => providerPublicView(item)),
+    mcp: mcpSnapshot,
     pi: piSnapshot,
     managedOllama: managedOllama.status(),
+    harnesses: harnessSnapshot.harnesses,
+    harnessErrors: harnessSnapshot.errors,
     app: { version: PACKAGE.version, startedAt: state.startedAt }
   };
 }
 
+const handleProviderRoutes = createProviderRoutes({ readBody, json, sendEvent });
+const handleTestingRoutes = createTestingRoutes({ readBody, json, sendEvent, resolveWorkspacePath, discoverTests, runTests, discoverRunConfigurations });
+const handlePiPlatformRoutes = createPiPlatformRoutes({ readBody, json, sendEvent, resolveWorkspacePath, inspectPiPlatform, writePromptTemplate, writeSkill, writeContextFile, writePiSettings });
+const handleMcpRoutes = createMcpRoutes({ manager: mcp, readBody, json, sendEvent });
+const handlePackageRoutes = createPackageRoutes({ readBody, json, sendEvent, resolveWorkspacePath, searchPiPackages, fetchPackageDetails, runPiPackageAction, configurePackageResources, inspectPackageSource, inspectPiPlatform });
+const handlePreviewRoutes = createPreviewRoutes({ manager: previews, readBody, json, sendEvent, resolveWorkspacePath, loadPreviewConfig, savePreviewConfig, suggestPreviewCommand });
+const handleOllamaRoutes = createOllamaRoutes({ readBody, json, sendEvent, readConfig, getOllamaStatus, loadProfiles, probeOllamaRuntime, showModel, modelDiagnostics, createModelProfile, pullModel, syncPiModels, deleteModel, unloadModel, setModelReasoning, isLocalOllamaBaseUrl, managedOllama });
+const handleTtsRoutes = createTtsRoutes({ readBody, json });
+
 async function handleApi(req, res, url) {
   const { pathname, searchParams } = url;
+
+  if (await handleProviderRoutes(req, res, url)) return true;
+  if (await handleTestingRoutes(req, res, url)) return true;
+  if (await handlePiPlatformRoutes(req, res, url)) return true;
+  if (await handleMcpRoutes(req, res, url)) return true;
+  if (await handlePackageRoutes(req, res, url)) return true;
+  if (await handlePreviewRoutes(req, res, url)) return true;
+  if (await handleOllamaRoutes(req, res, url)) return true;
+  if (await handleTtsRoutes(req, res, url)) return true;
 
   if (req.method === 'GET' && pathname === '/api/events') {
     res.writeHead(200, {
@@ -276,20 +380,59 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === 'GET' && pathname === '/api/harnesses') {
+    const result = await listHarnesses({ workspace: searchParams.get('workspace') || '' });
+    json(res, 200, { ok: true, ...result });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/api/harnesses') {
+    const body = await readBody(req);
+    const harness = await saveHarness({ workspace: body.workspace || '', scope: body.scope || 'global', harness: body.harness || body });
+    const result = await listHarnesses({ workspace: body.workspace || '' });
+    sendEvent('harnesses_changed', { workspace: body.workspace || '', harnessId: harness.id, scope: harness.scope, action: 'save' });
+    json(res, 200, { ok: true, harness, ...result });
+    return true;
+  }
+  if (req.method === 'DELETE' && pathname === '/api/harnesses') {
+    const body = await readBody(req);
+    const removed = await deleteHarness({ workspace: body.workspace || '', scope: body.scope || 'global', id: body.id || '' });
+    const result = await listHarnesses({ workspace: body.workspace || '' });
+    sendEvent('harnesses_changed', { workspace: body.workspace || '', harnessId: removed.id, scope: removed.scope, action: 'delete' });
+    json(res, 200, { ok: true, removed, ...result });
+    return true;
+  }
+
   if (req.method === 'POST' && pathname === '/api/pi/start') {
     const body = await readBody(req);
+    const harness = await resolveHarness(body.harnessId, { workspace: body.workspace || '' });
+    const cfg = await readConfig();
+    const ollamaReady = await ensureOllamaRuntimeForPi({
+      modelId: body.modelId || cfg.defaultModel,
+      provider: body.provider,
+      baseUrl: cfg.ollamaBaseUrl,
+      getStatus: getOllamaStatus,
+      isLocalBaseUrl: isLocalOllamaBaseUrl,
+      managedOllama
+    });
+    if (ollamaReady.started) sendEvent('ollama_managed_status', managedOllama.status());
     await syncPiModels().catch((error) => sendEvent('server_error', { source: 'model_sync', error: error.message }));
-    const response = await pi.start(body);
+    await syncProvidersToPi().catch((error) => sendEvent('server_error', { source: 'provider_sync', error: error.message }));
+    await ensureMcpPiBridge().catch((error) => sendEvent('server_error', { source: 'mcp_bridge', error: error.message }));
+    const response = await pi.start({ ...body, harnessId: harness.id, tools: harness.tools, appendSystemPrompt: composeHarnessSystemPrompt(harness), extensions: [TTS_EXTENSION_PATH], mcpBridgeUrl: studioLoopbackUrl(cfg) });
     state.piState = response.data;
     await refreshPiSnapshot();
     json(res, 200, { ok: true, response, status: pi.status() });
     return true;
   }
   if (req.method === 'POST' && pathname === '/api/pi/stop') {
-    await pi.stop();
-    state.piState = null;
-    state.piStats = null;
-    json(res, 200, { ok: true, status: pi.status() });
+    const body = await readBody(req).catch(() => ({}));
+    const expectedWorkspace = String(body.workspace || '').trim();
+    const result = await pi.stop({ expectedWorkspace });
+    if (result.stopped) {
+      state.piState = null;
+      state.piStats = null;
+    }
+    json(res, 200, { ok: true, ...result, status: pi.status() });
     return true;
   }
   if (req.method === 'POST' && pathname === '/api/pi/command') {
@@ -302,7 +445,10 @@ async function handleApi(req, res, url) {
         return errorJson(res, 429, 'Too many concurrent Pi commands — please wait for the current turn to finish');
       }
       piCommandsInFlight++;
-      const timeoutMs = 10 * 60 * 1000; // 10 minutes timeout for long context/reasoning turns
+      // Local 20B-70B models can legitimately need 10-15 minutes for a cold,
+      // tool-heavy turn. Keep one explicit model selected and wait; never fall
+      // back to a different model merely because it would respond sooner.
+      const timeoutMs = PI_COMMAND_TIMEOUT_MS;
       try {
         const response = await pi.request(command, timeoutMs);
         json(res, 200, { ok: true, response });
@@ -338,71 +484,36 @@ async function handleApi(req, res, url) {
   }
   if (req.method === 'POST' && pathname === '/api/sessions/create-project') {
     const body = (await readBody(req).catch(() => ({}))) || {};
-    json(res, 200, await createProjectFromNode(body.workspace, body.sessionPath, body.targetNodeId, body.name, body.parentDir));
+    let worktree = null;
+    const checkpoint = body.targetNodeId ? await getCheckpoint(body.workspace, body.targetNodeId) : null;
+    try {
+      if (checkpoint?.commit && body.useCheckpoint !== false) {
+        const cleanName = sanitizeProjectDirectoryName(body.name);
+        const baseDir = body.parentDir ? path.resolve(body.parentDir) : path.dirname(path.resolve(body.workspace));
+        const targetPath = path.join(baseDir, cleanName);
+        const slug = cleanName.toLowerCase().replace(/[^a-z0-9._/-]+/g, '-').replace(/^[-/.]+|[-/.]+$/g, '') || 'branch';
+        const branchName = `pi/${slug}-${Date.now().toString(36)}`;
+        worktree = await gitCreateWorktree(body.workspace, targetPath, checkpoint.commit, branchName);
+      }
+      const project = await createProjectFromNode(body.workspace, body.sessionPath, body.targetNodeId, body.name, body.parentDir, { copyWorkspace: !worktree });
+      json(res, 200, { ...project, checkpoint: checkpoint || null, worktree });
+    } catch (error) {
+      if (worktree?.target) await gitRemoveWorktree(body.workspace, worktree.target, worktree.branch || '').catch((rollbackError) => sendEvent('server_error', { source: 'create_project_rollback', error: rollbackError.message }));
+      throw error;
+    }
     return true;
   }
 
-  if (req.method === 'GET' && pathname === '/api/ollama/status') {
-    json(res, 200, { ok: true, ollama: await getOllamaStatus(), profiles: (await loadProfiles()).profiles });
+  if (req.method === 'GET' && pathname === '/api/checkpoints') {
+    const workspace = searchParams.get('workspace');
+    json(res, 200, { ok: true, checkpoints: await listCheckpoints(workspace) });
     return true;
   }
-  if (req.method === 'GET' && pathname === '/api/ollama/show') {
-    json(res, 200, { ok: true, model: await showModel(searchParams.get('model')) });
-    return true;
-  }
-  if (req.method === 'GET' && pathname === '/api/ollama/diagnostics') {
-    const cfg = await readConfig();
-    const model = searchParams.get('model');
-    const contextLength = Number(searchParams.get('contextLength') || cfg.defaultContextLength);
-    json(res, 200, {
-      ok: true,
-      diagnostics: await modelDiagnostics(model, contextLength, searchParams.get('kvType') || cfg.kvCacheType, Number(searchParams.get('parallel') || cfg.numParallel))
-    });
-    return true;
-  }
-  if (req.method === 'POST' && pathname === '/api/ollama/profile') {
-    const body = await readBody(req);
-    const profile = await createModelProfile(body, (event) => sendEvent('ollama_operation', { operation: 'create', model: body.name, event }));
-    sendEvent('ollama_models_changed', await getOllamaStatus());
-    json(res, 200, { ok: true, profile });
-    return true;
-  }
-  if (req.method === 'POST' && pathname === '/api/ollama/pull') {
-    const body = await readBody(req);
-    await pullModel(body.model, (event) => sendEvent('ollama_operation', { operation: 'pull', model: body.model, event }));
-    await syncPiModels();
-    sendEvent('ollama_models_changed', await getOllamaStatus());
-    json(res, 200, { ok: true });
-    return true;
-  }
-  if (req.method === 'DELETE' && pathname === '/api/ollama/model') {
-    const body = await readBody(req);
-    await deleteModel(body.model);
-    sendEvent('ollama_models_changed', await getOllamaStatus());
-    json(res, 200, { ok: true });
-    return true;
-  }
-  if (req.method === 'POST' && pathname === '/api/ollama/unload') {
-    const body = await readBody(req);
-    await unloadModel(body.model);
-    sendEvent('ollama_models_changed', await getOllamaStatus());
-    json(res, 200, { ok: true });
-    return true;
-  }
-  if (req.method === 'POST' && pathname === '/api/ollama/sync') {
-    json(res, 200, { ok: true, provider: await syncPiModels() });
-    return true;
-  }
-  if (req.method === 'POST' && pathname === '/api/ollama/managed/start') {
-    json(res, 200, { ok: true, status: await managedOllama.start() });
-    return true;
-  }
-  if (req.method === 'POST' && pathname === '/api/ollama/managed/stop') {
-    json(res, 200, { ok: true, status: await managedOllama.stop() });
-    return true;
-  }
-  if (req.method === 'POST' && pathname === '/api/ollama/managed/restart') {
-    json(res, 200, { ok: true, status: await managedOllama.restart() });
+
+  if (req.method === 'POST' && pathname === '/api/checkpoints/associate') {
+    const body = (await readBody(req).catch(() => ({}))) || {};
+    const checkpoint = await recordCheckpoint(body.workspace, body.nodeId, body.checkpoint || {});
+    json(res, 200, { ok: true, checkpoint });
     return true;
   }
 
@@ -422,19 +533,47 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === 'POST' && pathname === '/api/projects/create') {
+    const body = (await readBody(req).catch(() => ({}))) || {};
+    json(res, 200, await createNewProject(body.parentDir, body.name, body.template || 'empty'));
+    return true;
+  }
+
   if (req.method === 'GET' && pathname === '/api/workspace/tree') {
     json(res, 200, { ok: true, tree: await workspaceTree(searchParams.get('workspace'), searchParams.get('path') || '.', searchParams.get('depth') || 2) });
     return true;
   }
+  if (req.method === 'GET' && pathname === '/api/terminal/capabilities') {
+    json(res, 200, { ok: true, capabilities: await terminals.capabilities() });
+    return true;
+  }
   if (req.method === 'GET' && pathname === '/api/terminal/sessions') {
-    const list = [];
+    const requestedTerminalWorkspace = String(searchParams.get('workspace') || '').trim();
+    const terminalWorkspaceRoot = requestedTerminalWorkspace
+      ? (await resolveWorkspacePath(requestedTerminalWorkspace, '.')).root
+      : '';
+    const canonicalTerminalWorkspace = async (value) => {
+      if (!String(value || '').trim()) return '';
+      const resolved = await fs.realpath(path.resolve(String(value))).catch(() => path.resolve(String(value)));
+      return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    };
+    const terminalWorkspaceKey = terminalWorkspaceRoot ? await canonicalTerminalWorkspace(terminalWorkspaceRoot) : '';
+    let list = terminals.list();
+    if (terminalWorkspaceKey) {
+      const filtered = [];
+      for (const session of list) {
+        if (await canonicalTerminalWorkspace(session.workspace) === terminalWorkspaceKey) filtered.push(session);
+      }
+      list = filtered;
+    }
     const piStatus = pi.status();
-    if (piStatus.running) {
-      list.push({
+    if (piStatus.running && (!terminalWorkspaceKey || await canonicalTerminalWorkspace(piStatus.workspace) === terminalWorkspaceKey)) {
+      list.unshift({
         id: `pi-rpc-${piStatus.pid}`,
         pid: piStatus.pid,
         name: 'Pi RPC Engine Process',
         type: 'rpc',
+        backend: 'rpc',
         workspace: piStatus.workspace,
         model: piStatus.modelId,
         sessionFile: state.piState?.sessionFile || null,
@@ -443,19 +582,42 @@ async function handleApi(req, res, url) {
       });
     }
     for (const [id, item] of terminalSessions) {
-      let isAlive = false;
-      try {
-        if (item.pid) isAlive = process.kill(item.pid, 0);
-      } catch { isAlive = false; }
-      if (isAlive) {
-        list.push({ id, ...item, status: 'running' });
-      } else {
-        terminalSessions.delete(id);
-      }
+      const proc = desktopTerminalProcesses.get(id);
+      const isAlive = Boolean(proc && proc.exitCode == null && proc.signalCode == null);
+      if (isAlive && (!terminalWorkspaceKey || await canonicalTerminalWorkspace(item.workspace) === terminalWorkspaceKey)) list.push({ id, ...item, backend: 'desktop', status: 'running' });
+      else { terminalSessions.delete(id); desktopTerminalProcesses.delete(id); }
     }
     json(res, 200, { ok: true, sessions: list });
     return true;
   }
+
+  if (req.method === 'POST' && pathname === '/api/terminal/create') {
+    const body = await readBody(req);
+    const cfg = await readConfig();
+    const { root } = await resolveWorkspacePath(body.workspace || cfg.defaultWorkspace || process.cwd(), '.');
+    const session = await terminals.create({
+      workspace: root,
+      shell: body.shell || undefined,
+      name: body.name || undefined,
+      cols: body.cols,
+      rows: body.rows
+    });
+    json(res, 200, { ok: true, session });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/terminal/input') {
+    const body = await readBody(req);
+    json(res, 200, { ok: true, session: terminals.write(body.id, body.data) });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/terminal/resize') {
+    const body = await readBody(req);
+    json(res, 200, { ok: true, session: terminals.resize(body.id, body.cols, body.rows) });
+    return true;
+  }
+
 
   if (req.method === 'POST' && (pathname === '/api/terminal/launch' || pathname === '/api/workspace/terminal')) {
     const body = await readBody(req);
@@ -464,45 +626,63 @@ async function handleApi(req, res, url) {
     const stat = await fs.stat(targetDir).catch(() => null);
     if (!stat?.isDirectory()) throw new Error(`Workspace does not exist: ${targetDir}`);
 
-    const model = String(body?.model || cfg.defaultModel || '').trim();
-    const sessionFile = String(body?.sessionFile || '').trim();
+    const attachPi = Boolean(body?.attachPi);
+    const model = attachPi ? String(body?.model || cfg.defaultModel || '').trim() : '';
+    const sessionFile = attachPi ? String(body?.sessionFile || '').trim() : '';
     const id = `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const terminalEnv = {
+      ...process.env,
+      PI_STUDIO_WORKSPACE: targetDir,
+      PI_STUDIO_PI_COMMAND: String(cfg.piCommand || 'pi'),
+      PI_STUDIO_MODEL: model.startsWith('ollama/') ? model.slice(7) : model,
+      PI_STUDIO_SESSION_FILE: sessionFile
+    };
 
     let childPid = null;
     if (process.platform === 'win32') {
-      // CR-03: Reject paths containing PowerShell injection characters (backtick, $(), &, ;)
-      // before interpolating targetDir into the -Command string.
-      if (/[`$&|;]/.test(targetDir)) throw new Error('Workspace path contains characters that are unsafe for terminal launch on Windows');
-      const psEnv = `$env:OLLAMA_MODELS="H:\\ollama-models"; Set-Location -LiteralPath "${targetDir.replace(/"/g, '""')}"`;
-      let piCmd = cfg.piCommand || 'pi';
-      if (model) {
-        const cleanModel = model.startsWith('ollama/') ? model.slice(7) : model;
-        piCmd += ` --provider ollama --model "${cleanModel.replace(/"/g, '""')}"`;
+      let args = ['-NoExit'];
+      if (attachPi) {
+        const psScript = [
+          'Set-Location -LiteralPath $env:PI_STUDIO_WORKSPACE',
+          'Write-Host "=== Pi Ollama Studio — Attached Session Terminal ===" -ForegroundColor Cyan',
+          '$piArgs = @()',
+          'if ($env:PI_STUDIO_MODEL) { $piArgs += @("--provider", "ollama", "--model", $env:PI_STUDIO_MODEL) }',
+          'if ($env:PI_STUDIO_SESSION_FILE) { $piArgs += @("--session", $env:PI_STUDIO_SESSION_FILE) }',
+          '& $env:PI_STUDIO_PI_COMMAND @piArgs'
+        ].join('; ');
+        const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+        args = ['-NoExit', '-EncodedCommand', encoded];
       }
-      if (sessionFile) {
-        piCmd += ` --session "${sessionFile.replace(/"/g, '""')}"`;
-      }
-      const psScript = `${psEnv}; Write-Host "=== Pi Ollama Studio — Attached Session Terminal ===" -ForegroundColor Cyan; ${piCmd}`;
-      const proc = spawn('powershell.exe', ['-NoExit', '-Command', psScript], {
-        detached: true,
-        stdio: 'ignore'
-      });
+      const proc = spawn('powershell.exe', args, { cwd: targetDir, env: terminalEnv, detached: true, stdio: 'ignore' });
       childPid = proc.pid;
+      desktopTerminalProcesses.set(id, proc);
+      proc.once('exit', () => { if (desktopTerminalProcesses.get(id) === proc) { desktopTerminalProcesses.delete(id); terminalSessions.delete(id); } });
+      proc.once('error', () => { if (desktopTerminalProcesses.get(id) === proc) { desktopTerminalProcesses.delete(id); terminalSessions.delete(id); } });
       proc.unref();
     } else {
-      const proc = spawn('x-terminal-emulator', ['--working-directory', targetDir], { detached: true, stdio: 'ignore' });
+      let args = ['--working-directory', targetDir];
+      if (attachPi) {
+        const shell = process.env.SHELL || '/bin/bash';
+        const script = 'cd -- "$PI_STUDIO_WORKSPACE"; set --; if [ -n "$PI_STUDIO_MODEL" ]; then set -- "$@" --provider ollama --model "$PI_STUDIO_MODEL"; fi; if [ -n "$PI_STUDIO_SESSION_FILE" ]; then set -- "$@" --session "$PI_STUDIO_SESSION_FILE"; fi; exec "$PI_STUDIO_PI_COMMAND" "$@"';
+        args = ['-e', shell, '-lc', script];
+      }
+      const proc = spawn('x-terminal-emulator', args, { cwd: targetDir, env: terminalEnv, detached: true, stdio: 'ignore' });
       childPid = proc.pid;
+      desktopTerminalProcesses.set(id, proc);
+      proc.once('exit', () => { if (desktopTerminalProcesses.get(id) === proc) { desktopTerminalProcesses.delete(id); terminalSessions.delete(id); } });
+      proc.once('error', () => { if (desktopTerminalProcesses.get(id) === proc) { desktopTerminalProcesses.delete(id); terminalSessions.delete(id); } });
       proc.unref();
     }
 
     const sessionInfo = {
       id,
       pid: childPid,
-      name: `Terminal ${model ? `(${model.split(':')[0]})` : ''}`,
+      name: attachPi ? `Pi Terminal ${model ? `(${model.split(':')[0]})` : ''}` : 'Terminal',
       type: 'desktop',
       workspace: targetDir,
       model,
       sessionFile,
+      attachPi,
       startedAt: new Date().toISOString()
     };
     terminalSessions.set(id, sessionInfo);
@@ -514,21 +694,65 @@ async function handleApi(req, res, url) {
   if (req.method === 'POST' && pathname === '/api/terminal/kill') {
     const body = await readBody(req);
     const id = String(body?.id || '');
-    const pid = Number(body?.pid);
-    if (!id && !pid) throw new Error('Terminal session ID or PID is required');
+    if (!id) throw Object.assign(new Error('Terminal session ID is required'), { statusCode: 400 });
 
     let killed = false;
-    if (id && terminalSessions.has(id)) {
-      const item = terminalSessions.get(id);
-      if (item?.pid) {
-        try { process.kill(item.pid, 'SIGKILL'); } catch { /* ignore */ }
-      }
+    if (terminals.get(id)) {
+      await terminals.kill(id);
+      killed = true;
+    } else if (terminalSessions.has(id)) {
+      const proc = desktopTerminalProcesses.get(id);
+      if (proc) await terminateProcessTree(proc).catch(() => {});
+      desktopTerminalProcesses.delete(id);
       terminalSessions.delete(id);
       killed = true;
-    } else if (pid) {
-      try { process.kill(pid, 'SIGKILL'); killed = true; } catch { /* ignore */ }
     }
     json(res, 200, { ok: true, killed });
+    return true;
+  }
+
+  // ── Language Server Protocol ─────────────────────────────────────────────
+  if (req.method === 'GET' && pathname === '/api/lsp/status') {
+    const { root } = await resolveWorkspacePath(searchParams.get('workspace'), '.');
+    json(res, 200, { ok: true, servers: await lsp.statusWithDefinitions(root) });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/api/lsp/document') {
+    const body = await readBody(req);
+    const { root, relative } = await resolveWorkspacePath(body.workspace, body.path || '.');
+    const action = ['open', 'change', 'save', 'close'].includes(body.action) ? body.action : 'open';
+    const languageId = body.languageId || languageIdForPath(relative);
+    const results = await lsp.syncDocument({ workspace: root, path: relative, languageId, text: body.text ?? '', version: body.version, action });
+    json(res, 200, { ok: true, path: relative, languageId, results });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/api/lsp/request') {
+    const body = await readBody(req);
+    const { root, relative } = body.path ? await resolveWorkspacePath(body.workspace, body.path) : await resolveWorkspacePath(body.workspace, '.');
+    const result = await lsp.request({ workspace: root, path: body.path ? relative : '', languageId: body.languageId || languageIdForPath(relative), method: body.method, params: body.params || {}, text: body.text, version: body.version, serverId: body.serverId || '' });
+    json(res, 200, { ok: true, ...result });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/api/lsp/stop') {
+    const body = await readBody(req);
+    const { root } = await resolveWorkspacePath(body.workspace, '.');
+    const servers = await lsp.stopWorkspace(root, body.serverId || '');
+    json(res, 200, { ok: true, servers });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/api/lsp/restart') {
+    const body = await readBody(req);
+    const { root } = await resolveWorkspacePath(body.workspace, '.');
+    const servers = await lsp.restart(root, body.serverId || '');
+    json(res, 200, { ok: true, servers });
+    return true;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/workspace/search') {
+    const { root } = await resolveWorkspacePath(searchParams.get('workspace'), '.');
+    const query = searchParams.get('q') || '';
+    const limit = Math.max(1, Math.min(500, Number(searchParams.get('limit') || 200)));
+    json(res, 200, { ok: true, result: await searchWorkspace(root, query, { limit }) });
     return true;
   }
   if (req.method === 'GET' && pathname === '/api/workspace/file') {
@@ -537,18 +761,48 @@ async function handleApi(req, res, url) {
     if (!stat.isFile()) throw new Error('Path is not a file');
     if (stat.size > 3 * 1024 * 1024) throw new Error('File is larger than the 3 MB editor limit');
     const content = await fs.readFile(target, 'utf8');
-    json(res, 200, { ok: true, file: { path: relative.split(path.sep).join('/'), content, size: stat.size, modifiedAt: stat.mtime.toISOString() } });
+    rememberWorkspaceFileRevision(target, { mtimeMs: stat.mtimeMs, size: stat.size, hash: fileContentHash(content) });
+    json(res, 200, { ok: true, file: { path: relative.split(path.sep).join('/'), content, size: stat.size, modifiedAt: stat.mtime.toISOString(), mtimeMs: stat.mtimeMs } });
     return true;
   }
   if (req.method === 'PUT' && pathname === '/api/workspace/file') {
     const body = await readBody(req);
-    const { target, relative } = await resolveWorkspacePath(body.workspace, body.path, { allowMissing: true });
+    const { root, target, relative } = await resolveWorkspacePath(body.workspace, body.path, { allowMissing: true });
     const content = String(body.content ?? '');
     if (Buffer.byteLength(content) > 3 * 1024 * 1024) throw new Error('File is larger than the 3 MB editor limit');
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, content, 'utf8');
-    sendEvent('workspace_file_changed', { path: relative.split(path.sep).join('/'), source: 'editor' });
-    json(res, 200, { ok: true });
+    const file = await serializeMutation(target, async () => {
+      // The optimistic mtime check and write must be one transaction. Without this
+      // lock, two simultaneous saves can both validate the same mtime and silently
+      // overwrite each other.
+      const current = await fs.stat(target).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error));
+      const hasExpectedMtime = body.expectedMtimeMs !== null && body.expectedMtimeMs !== undefined && body.expectedMtimeMs !== '';
+      const expectedMtimeMs = hasExpectedMtime ? Number(body.expectedMtimeMs) : Number.NaN;
+      let revisionConflict = false;
+      if (!body.force && current?.isFile() && Number.isFinite(expectedMtimeMs)) {
+        revisionConflict = Math.abs(current.mtimeMs - expectedMtimeMs) > 0.5;
+        if (!revisionConflict) {
+          const known = workspaceFileRevisions.get(target);
+          if (known && Math.abs(known.mtimeMs - expectedMtimeMs) <= 0.5) {
+            const currentRevision = await readWorkspaceFileRevision(target, current);
+            revisionConflict = currentRevision.size !== known.size || currentRevision.hash !== known.hash;
+          }
+        }
+      }
+      if (revisionConflict) {
+        throw Object.assign(new Error('File changed on disk since it was opened'), {
+          statusCode: 409,
+          code: 'FILE_CHANGED_ON_DISK',
+          details: { path: relative.split(path.sep).join('/'), modifiedAt: current.mtime.toISOString(), mtimeMs: current.mtimeMs, size: current.size }
+        });
+      }
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, content, 'utf8');
+      const stat = await fs.stat(target);
+      rememberWorkspaceFileRevision(target, { mtimeMs: stat.mtimeMs, size: stat.size, hash: fileContentHash(content) });
+      return { path: relative.split(path.sep).join('/'), size: stat.size, modifiedAt: stat.mtime.toISOString(), mtimeMs: stat.mtimeMs };
+    });
+    sendEvent('workspace_file_changed', { workspace: root, path: file.path, source: 'editor', mtimeMs: file.mtimeMs });
+    json(res, 200, { ok: true, file });
     return true;
   }
   if (req.method === 'GET' && pathname === '/api/workspace/git') {
@@ -556,11 +810,40 @@ async function handleApi(req, res, url) {
     json(res, 200, { ok: true, git: await getGitStatus(root) });
     return true;
   }
+  if (req.method === 'POST' && pathname === '/api/workspace/git/init') {
+    const body = await readBody(req);
+    const { root } = await resolveWorkspacePath(body.workspace, '.');
+    const result = await gitInitializeRepository(root, {
+      initialBranch: body.initialBranch || 'main',
+      createGitignore: body.createGitignore !== false,
+      createBaseline: body.createBaseline !== false,
+      confirmSensitive: body.confirmSensitive === true
+    });
+    sendEvent('workspace_git_changed', { workspace: root });
+    json(res, 200, result);
+    return true;
+  }
+
   if (req.method === 'GET' && pathname === '/api/workspace/git/diff') {
     // CR-01: Validate path with workspace containment before passing to gitDiff.
     const { root, relative } = await resolveWorkspacePath(searchParams.get('workspace'), searchParams.get('path') || '.');
     const staged = searchParams.get('staged') === '1';
     json(res, 200, { ok: true, diff: await gitDiff(root, relative, staged) });
+    return true;
+  }
+  if (req.method === 'GET' && pathname === '/api/workspace/git/file') {
+    const { root, relative } = await resolveWorkspacePath(searchParams.get('workspace'), searchParams.get('path') || '.');
+    const source = searchParams.get('source') || 'head';
+    json(res, 200, { ok: true, file: { path: relative, ...(await gitReadFileVersion(root, relative, source)) } });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/api/workspace/git/restore') {
+    const body = await readBody(req);
+    const { root, relative } = await resolveWorkspacePath(body.workspace, body.path || '.');
+    await gitRestoreFile(root, relative);
+    sendEvent('workspace_file_changed', { workspace: root, path: relative.split(path.sep).join('/'), source: 'git-restore' });
+    sendEvent('workspace_git_changed', { workspace: root });
+    json(res, 200, { ok: true });
     return true;
   }
   if (req.method === 'POST' && pathname === '/api/workspace/git/stage') {
@@ -586,26 +869,23 @@ async function handleApi(req, res, url) {
     return true;
   }
 
-  // ── TTS Health & Proxy ────────────────────────────────────────────────────
-  if (req.method === 'GET' && pathname === '/api/tts/health') {
-    const ttsBase = searchParams.get('url') || 'http://localhost:7860';
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3000);
-      const upstream = await fetch(`${ttsBase}/api/status`, { signal: controller.signal });
-      clearTimeout(timer);
-      if (!upstream.ok) {
-        json(res, 200, { ok: false, online: false, status: upstream.status, error: `TTS server returned HTTP ${upstream.status}` });
-      } else {
-        const body = await upstream.json().catch(() => ({}));
-        json(res, 200, { ok: true, online: true, status: upstream.status, loaded: body?.model_loaded ?? null, voice: body?.voices ?? null });
-      }
-    } catch (err) {
-      const isTimeout = err.name === 'AbortError';
-      json(res, 200, { ok: false, online: false, error: isTimeout ? 'TTS server timed out' : `TTS server unreachable: ${err.message}` });
-    }
+  if (req.method === 'POST' && pathname === '/api/workspace/git/checkpoint') {
+    const body = await readBody(req);
+    const { root } = await resolveWorkspacePath(body.workspace, '.');
+    const checkpoint = await gitCreateSnapshot(root, body.label || 'Pi Studio checkpoint');
+    json(res, 200, { ok: true, checkpoint: { ...checkpoint, createdAt: new Date().toISOString() } });
     return true;
   }
+
+  if (req.method === 'POST' && pathname === '/api/workspace/git/worktree') {
+    const body = await readBody(req);
+    const { root } = await resolveWorkspacePath(body.workspace, '.');
+    const worktree = await gitCreateWorktree(root, body.targetPath, body.ref, body.branchName || '');
+    json(res, 200, { ok: true, worktree });
+    return true;
+  }
+
+
 
   return false;
 }
@@ -616,13 +896,25 @@ const mimeTypes = {
 };
 
 async function serveStatic(req, res, pathname) {
-  let relative = decodeURIComponent(pathname === '/' ? '/index.html' : pathname);
+  let root = PUBLIC_DIR;
+  let requested = pathname;
+  let fallbackToIndex = true;
+  if (pathname.startsWith('/vendor/monaco/')) {
+    root = MONACO_DIR;
+    requested = pathname.slice('/vendor/monaco'.length);
+    fallbackToIndex = false;
+  } else if (pathname.startsWith('/vendor/xterm/')) {
+    root = XTERM_DIR;
+    requested = pathname.slice('/vendor/xterm'.length);
+    fallbackToIndex = false;
+  }
+  let relative = safeDecode(requested === '/' ? '/index.html' : requested);
   relative = relative.replace(/^\/+/, '');
-  const target = path.resolve(PUBLIC_DIR, relative);
-  if (!target.startsWith(`${PUBLIC_DIR}${path.sep}`) && target !== PUBLIC_DIR) return false;
+  const target = path.resolve(root, relative);
+  if (!target.startsWith(`${root}${path.sep}`) && target !== root) return false;
   let stat = await fs.stat(target).catch(() => null);
   let file = target;
-  if (!stat?.isFile()) {
+  if (!stat?.isFile() && fallbackToIndex) {
     file = path.join(PUBLIC_DIR, 'index.html');
     stat = await fs.stat(file).catch(() => null);
   }
@@ -632,15 +924,20 @@ async function serveStatic(req, res, pathname) {
   res.writeHead(200, {
     'content-type': mimeTypes[path.extname(file)] || 'application/octet-stream',
     'content-length': content.length,
-    'cache-control': 'no-cache, must-revalidate'
+    'cache-control': (pathname.startsWith('/vendor/monaco/') || pathname.startsWith('/vendor/xterm/')) ? 'public, max-age=31536000, immutable' : 'no-cache, must-revalidate'
   });
   res.end(req.method === 'HEAD' ? undefined : content);
   return true;
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url || '/', 'http://localhost');
+  let url = null;
   try {
+    try {
+      url = new URL(req.url || '/', 'http://localhost');
+    } catch (cause) {
+      throw Object.assign(new Error('Malformed request URL'), { statusCode: 400, code: 'BAD_REQUEST_URL', cause });
+    }
     setSecurityHeaders(res);
     let hostname = '';
     try { hostname = new URL(`http://${req.headers.host || ''}`).hostname; } catch { throw forbidden('Invalid Host header'); }
@@ -651,7 +948,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (!['GET', 'HEAD'].includes(req.method || 'GET') && req.headers.origin) {
-      const origin = new URL(req.headers.origin);
+      let origin; try { origin = new URL(req.headers.origin); } catch { throw forbidden('Invalid Origin header'); }
       if (!isLoopbackHost(origin.hostname) || origin.host.toLowerCase() !== String(req.headers.host || '').toLowerCase()) {
         throw forbidden('Cross-origin state-changing requests are not allowed');
       }
@@ -665,15 +962,20 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     state.lastError = error.message;
     const status = error.statusCode || (error.code === 'ENOENT' ? 404 : 500);
-    sendEvent('server_error', { source: 'http', path: url.pathname, error: error.message });
-    errorJson(res, status, error);
+    sendEvent('server_error', { source: 'http', path: url?.pathname || String(req.url || ''), error: error.message });
+    // A route may fail after beginning a streamed/binary response. Never try
+    // to write a second set of headers: Node treats that as an uncaught server
+    // error and can terminate Studio. The original response is already the
+    // only valid response at this point; logs/SSE preserve the failure detail.
+    if (!res.headersSent && !res.writableEnded) errorJson(res, status, error);
+    else if (!res.writableEnded) res.end();
   }
 });
 
 const config = await readConfig();
 server.listen(config.port, config.bindHost, () => {
   console.log(`Pi Ollama Studio listening on http://${config.bindHost}:${config.port}`);
-  if (config.managedOllama) {
+  if (config.managedOllama && isLocalOllamaBaseUrl(config.ollamaBaseUrl)) {
     getOllamaStatus()
       .then((status) => status.online ? null : managedOllama.start())
       .catch((error) => {
@@ -692,6 +994,12 @@ async function shutdown(signal) {
   server.close();
   await pi.stop().catch(() => {});
   await managedOllama.stop().catch(() => {});
+  await lsp.stopAll().catch(() => {});
+  await mcp.dispose().catch(() => {});
+  await previews.dispose().catch(() => {});
+  await terminals.dispose().catch(() => {});
+  await Promise.allSettled([...desktopTerminalProcesses.values()].map((proc) => terminateProcessTree(proc)));
+  desktopTerminalProcesses.clear();
   process.exit(0);
 }
 process.on('SIGINT', () => shutdown('SIGINT'));

@@ -1,6 +1,10 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+export const APP_VERSION = String(require('../package.json')?.version || '0.0.0');
 
 // ── Directory Paths ────────────────────────────────────────────────────────────
 // PI_OLLAMA_STUDIO_DIR overrides the app data dir (useful in tests/custom installs).
@@ -26,6 +30,9 @@ export const DEFAULT_CONFIG = Object.freeze({
   bindHost: process.env.STUDIO_BIND_HOST || '127.0.0.1',
   port: Number(process.env.STUDIO_PORT || 4173),
   ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
+  ollamaApiKeyEnv: process.env.PI_STUDIO_OLLAMA_API_KEY_ENV || '',
+  ollamaRuntimeKind: process.env.PI_STUDIO_OLLAMA_RUNTIME_KIND || 'local',
+  ollamaRuntimeName: process.env.PI_STUDIO_OLLAMA_RUNTIME_NAME || 'Local Ollama',
 
   // ── Executables ─────────────────────────────────────────────────────────────
   piCommand: process.env.PI_COMMAND || 'pi',
@@ -48,7 +55,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   noCloud: true,
   defaultWorkspace: '',
   defaultModel: '',
-  trustProjects: true,
+  trustProjects: false,
   sessionStorage: 'workspace',
 
   // ── Default AGENTS.md template injected into new workspaces ─────────────────
@@ -70,6 +77,34 @@ export function isLoopbackHost(value) {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1';
 }
 
+export function studioLoopbackUrl(config = DEFAULT_CONFIG) {
+  const raw = String(config.bindHost || '127.0.0.1').trim().replace(/^\[|\]$/g, '');
+  if (!isLoopbackHost(raw)) throw new Error('Studio URL requires a loopback bind host');
+  const host = raw.includes(':') ? `[${raw}]` : raw;
+  return `http://${host}:${Number(config.port || 4173)}`;
+}
+
+// Explicit process environment values are launch-time overrides. This keeps
+// documented invocations such as `STUDIO_PORT=5000 npm start` authoritative
+// even when runtime.json was written by an earlier Studio session.
+export function runtimeEnvironmentOverrides(env = process.env) {
+  const overrides = {};
+  const assign = (key, envKey, transform = (value) => value) => {
+    if (Object.prototype.hasOwnProperty.call(env, envKey) && String(env[envKey]).trim() !== '') {
+      overrides[key] = transform(env[envKey]);
+    }
+  };
+  assign('bindHost', 'STUDIO_BIND_HOST', (value) => String(value).trim());
+  assign('port', 'STUDIO_PORT', Number);
+  assign('ollamaBaseUrl', 'OLLAMA_BASE_URL', (value) => String(value).trim());
+  assign('ollamaApiKeyEnv', 'PI_STUDIO_OLLAMA_API_KEY_ENV', (value) => String(value).trim());
+  assign('ollamaRuntimeKind', 'PI_STUDIO_OLLAMA_RUNTIME_KIND', (value) => String(value).trim());
+  assign('ollamaRuntimeName', 'PI_STUDIO_OLLAMA_RUNTIME_NAME', (value) => String(value).trim());
+  assign('piCommand', 'PI_COMMAND', (value) => String(value));
+  assign('ollamaCommand', 'OLLAMA_COMMAND', (value) => String(value));
+  return overrides;
+}
+
 // ── Config Validation ──────────────────────────────────────────────────────────
 // Merges `value` over DEFAULT_CONFIG, coerces types, and validates ranges.
 // Throws descriptive Error messages — never returns invalid state.
@@ -78,6 +113,14 @@ export function validateConfig(value) {
 
   // URL format
   if (!/^https?:\/\//.test(cfg.ollamaBaseUrl)) throw new Error('ollamaBaseUrl must be an http(s) URL');
+  cfg.ollamaBaseUrl = String(cfg.ollamaBaseUrl).replace(/\/+$/, '');
+  cfg.ollamaApiKeyEnv = String(cfg.ollamaApiKeyEnv || '').trim();
+  if (cfg.ollamaApiKeyEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(cfg.ollamaApiKeyEnv)) {
+    throw new Error('ollamaApiKeyEnv must be an environment variable name');
+  }
+  cfg.ollamaRuntimeKind = String(cfg.ollamaRuntimeKind || 'local').trim().toLowerCase();
+  if (!['local', 'lan', 'vpn', 'remote', 'https'].includes(cfg.ollamaRuntimeKind)) throw new Error('Invalid Ollama runtime kind');
+  cfg.ollamaRuntimeName = String(cfg.ollamaRuntimeName || 'Ollama').trim().slice(0, 120) || 'Ollama';
 
   // KV cache type enum
   if (!['f16', 'q8_0', 'q4_0'].includes(cfg.kvCacheType)) throw new Error('Invalid KV cache type');
@@ -124,24 +167,35 @@ export function validateConfig(value) {
 // Falls back to DEFAULT_CONFIG on first run (ENOENT) or corrupt file (SyntaxError).
 export async function readConfig() {
   try {
-    return validateConfig(JSON.parse(await fs.readFile(CONFIG_PATH, 'utf8')));
+    return validateConfig({
+      ...JSON.parse(await fs.readFile(CONFIG_PATH, 'utf8')),
+      ...runtimeEnvironmentOverrides()
+    });
   } catch (error) {
     if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
-    return { ...DEFAULT_CONFIG };
+    return validateConfig({ ...DEFAULT_CONFIG, ...runtimeEnvironmentOverrides() });
   }
 }
 
 // writeConfig: merges update into current config, validates, then writes atomically.
 export async function writeConfig(update) {
-  const current = await readConfig();
-  const next = validateConfig({ ...current, ...(update || {}) });
-  await fs.mkdir(APP_DIR, { recursive: true });
-  await writeJsonAtomic(CONFIG_PATH, next);
-  return next;
+  return serializeMutation(CONFIG_PATH, async()=>{const current=validateConfig(await readJsonStrict(CONFIG_PATH, DEFAULT_CONFIG));const next=validateConfig({...current,...(update||{})});await fs.mkdir(APP_DIR,{recursive:true});await writeJsonAtomic(CONFIG_PATH,next);return next;});
 }
 
 // ── JSON Helpers ───────────────────────────────────────────────────────────────
+const mutationQueues = new Map();
+
+export function serializeMutation(key, task) {
+  const lockKey = path.resolve(String(key || '.'));
+  const prior = mutationQueues.get(lockKey) || Promise.resolve();
+  const current = prior.catch(() => {}).then(task);
+  mutationQueues.set(lockKey, current);
+  return current.finally(() => { if (mutationQueues.get(lockKey) === current) mutationQueues.delete(lockKey); });
+}
+
 // readJson: reads a JSON file, returning `fallback` on ENOENT or parse error.
+// Use for tolerant startup/display reads only. Mutations must use readJsonStrict so a
+// malformed but recoverable file is never silently replaced with fallback state.
 export async function readJson(file, fallback = {}) {
   try {
     return JSON.parse(await fs.readFile(file, 'utf8'));
@@ -151,13 +205,55 @@ export async function readJson(file, fallback = {}) {
   }
 }
 
+export async function readJsonStrict(file, fallback = {}) {
+  try {
+    return JSON.parse(await fs.readFile(file, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return structuredClone(fallback);
+    if (error instanceof SyntaxError) {
+      throw Object.assign(new Error(`JSON store is corrupt: ${file}`), {
+        code: 'JSON_STORE_CORRUPT',
+        statusCode: 409,
+        cause: error,
+        path: file
+      });
+    }
+    throw error;
+  }
+}
+
 // writeJsonAtomic: writes to a temp file then renames it — prevents partial writes
 // from corrupting the config file if the process crashes mid-write.
 export async function writeJsonAtomic(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-  await fs.rename(tmp, file);
+  const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  try {
+    await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await fs.rename(tmp, file);
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+  }
+}
+
+// ── Canonical Workspace Paths ─────────────────────────────────────────────────
+// Use real filesystem identity for state keyed by workspace. This keeps session,
+// checkpoint and runtime state stable when the same project is opened through a
+// symlink/junction or a differently-cased Windows drive letter.
+export function normalizeCanonicalPath(value) {
+  let resolved = path.resolve(String(value || ''));
+  if (process.platform === 'win32') resolved = resolved.replace(/^([a-z]):/, (_, drive) => `${drive.toUpperCase()}:`);
+  return resolved;
+}
+
+export async function canonicalWorkspacePath(workspace, { allowMissing = false } = {}) {
+  if (!workspace) throw new Error('Workspace is required');
+  const lexical = normalizeCanonicalPath(workspace);
+  try {
+    return normalizeCanonicalPath(await fs.realpath(lexical));
+  } catch (error) {
+    if (allowMissing && error?.code === 'ENOENT') return lexical;
+    throw error;
+  }
 }
 
 // ── Session Directory Helpers ──────────────────────────────────────────────────

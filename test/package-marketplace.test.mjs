@@ -1,0 +1,6 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import { packageRiskSummary, safeExternalUrl } from '../public/package-marketplace.js';
+test('marketplace trust summary highlights executable extensions and install scripts',()=>{const risks=packageRiskSummary({trust:{hasInstallScripts:true,installScripts:{postinstall:'node setup.js'},hasExtensions:true,dependencyCount:42}});assert.ok(risks.some((x)=>/install scripts/i.test(x)));assert.ok(risks.some((x)=>/extensions/i.test(x)));assert.ok(risks.some((x)=>/42/.test(x)));});
+
+test('marketplace external links only allow HTTP(S) navigation',()=>{assert.equal(safeExternalUrl('javascript:alert(1)'),'');assert.equal(safeExternalUrl('file:///tmp/x'),'');assert.match(safeExternalUrl('https://example.com/repo'),/^https:\/\/example\.com/);});
+
+test('package mutations expose readiness, busy states and confirm removal',async()=>{const source=await fs.readFile(new URL('../public/package-marketplace.js',import.meta.url),'utf8');assert.match(source,/function updateDirectActions\(\)/);assert.match(source,/projectReady/);assert.match(source,/patterns\.disabled = mode\?\.value !== 'custom'/);assert.match(source,/Installing…/);assert.match(source,/Updating…/);assert.match(source,/Remove Pi package .* from .* scope/);assert.match(source,/confirmAction/);});

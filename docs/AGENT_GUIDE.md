@@ -6,9 +6,9 @@ This document is written for AI Coding Assistants (e.g. Gemini, Claude, Qwen, Co
 
 ## 1. Quick Reference & Core Invariants
 
-- **Root Working Dir**: Workspace project root (`h:/pi-ollam studio/pi-ollama-studio-v1.1.2/pi-ollama-studio`).
+- **Root Working Dir**: The checked-out `pi-ollama-studio` repository root. Never hard-code a developer-specific absolute path.
 - **Main Server File**: `server.mjs`
-- **Main UI File**: `public/app.js`
+- **Main UI Files**: `public/app.js` plus browser-independent primitives in `public/command-system.js` and `public/workbench.js`
 - **CSS Design Token Base**: `public/styles.css`
 - **Test Runner**: Node built-in test runner (`npm test`)
 

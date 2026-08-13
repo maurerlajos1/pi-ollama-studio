@@ -64,6 +64,26 @@ test('PiRpcProcess starts, correlates responses and emits events', async (t) => 
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.ok(events.some((event) => event.type === 'message_update'));
   assert.ok(events.some((event) => event.type === 'agent_settled'));
+
+  const first = proc.request({ type: 'get_state', id: 'duplicate' });
+  await assert.rejects(
+    () => proc.request({ type: 'get_state', id: 'duplicate' }),
+    (error) => error.code === 'PI_RPC_DUPLICATE_ID'
+  );
+  assert.equal((await first).data.sessionId, 'mock');
+
+  await proc.request({ type: 'set_model', provider: 'ollama', modelId: 'next-model' });
+  assert.equal(proc.status().modelId, 'next-model', 'a successful live model switch must update the restart contract');
+  await proc.request({ type: 'set_model', provider: 'openai', modelId: 'gpt-test' });
+  assert.equal(proc.status().modelId, 'openai/gpt-test');
+
+  const staleStop = await proc.stop({ expectedWorkspace: path.join(root, 'different-workspace') });
+  assert.equal(staleStop.stopped, false);
+  assert.equal(staleStop.reason, 'workspace-mismatch');
+  assert.equal(proc.running, true, 'a stale workspace stop must not terminate the active Pi process');
+  const matchingStop = await proc.stop({ expectedWorkspace: workspace });
+  assert.equal(matchingStop.stopped, true);
+  assert.equal(proc.running, false);
 });
 
 test('PiRpcProcess rejects session files outside its workspace session directory', async (t) => {
